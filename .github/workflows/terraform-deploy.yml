@@ -169,18 +169,16 @@ jobs:
 
           sudo --preserve-env=PATH bash -c '
             export PATH=$PATH:/usr/sbin:/sbin:/usr/bin:/bin
-
-            for vm in utility-node do
-              echo "🔌 Stopping $vm"
-              vmid=$(qm list | awk -v name="$vm" '\''$0 ~ name {print $1}'\'')
-              if [[ -n "$vmid" ]]; then
-                echo "VM ID for $vm: $vmid"
-                qm stop "$vmid" || true
-              else
-                echo "⚠️  VM $vm not found — skipping"
-              fi
-            done
-
+            vm="utility-node"
+            echo "🔌 Stopping $vm"
+            vmid=$(qm list | awk -v name="$vm" '\''$0 ~ name {print $1}'\'')
+            if [[ -n "$vmid" ]]; then
+              echo "VM ID for $vm: $vmid"
+              qm stop "$vmid" || true
+            else
+              echo "⚠️  VM $vm not found — skipping"
+            fi
+            
             echo "🧼 Cleaning up cloud-init snippets..."
             rm -f /var/lib/vz/snippets/cloud_init_*.yaml || true
           '
