@@ -25,7 +25,7 @@ permissions: write-all
 jobs:
   tfc:
     name: "Terraform: ${{ github.event.inputs.mode }}"
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     env:
       TF_CLOUD_ORGANIZATION: ${{ github.repository_owner }}
       TF_API_TOKEN: ${{ secrets.TFE_TOKEN }}
