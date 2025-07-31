@@ -356,8 +356,8 @@ write_files:
       # Create proxy cache projects for common registries
       HARBOR_HOST=$(hostname -I | awk '{print $1}')
       HARBOR_URL="http://$HARBOR_HOST"
-      export HARBOR_USER=${HARBOR_USER:-admin}
-      export HARBOR_PASS=${HARBOR_PASS:-Harbor12345}
+      export HARBOR_USER=${HARBOR_USER}
+      export HARBOR_PASS=${HARBOR_PASS}
 
       
       # Wait for Harbor API to be available
