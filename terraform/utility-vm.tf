@@ -101,8 +101,13 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
     interface    = "scsi1"
     ip_config {
       ipv4 {
-        address = "dhcp"
+        address = "10.0.0.200/24"
+        gateway = "10.0.0.10"
       }
+    }
+    dns {
+      servers = ["10.0.0.10", "8.8.8.8"]
+      domain  = "internal.lan"
     }
 
     user_data_file_id = proxmox_virtual_environment_file.utility_cloud_init_config.id
