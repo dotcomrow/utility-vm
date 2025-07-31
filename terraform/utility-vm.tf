@@ -20,6 +20,7 @@ resource "proxmox_virtual_environment_file" "utility_cloud_init_config" {
     data  = templatefile("${path.module}/config/cloud_init_utility_vm.tftpl", {
         hostname   = var.utility_hostname
         GCP_LOGGING_KEY = local.utility_credentials_json
+        ssh_keys = join("\n      - ", [trimspace(var.admin_ssh_public_key)])
       })
     file_name = "cloud_init_utility_vm.yaml"
   }
