@@ -87,28 +87,25 @@ write_files:
       echo "🔧 Setting up utility VM..."
 
       # Harbor installation and configuration
-      HARBOR_VERSION="v2.11.1"
-      HARBOR_DIR="/opt/harbor"
-      HARBOR_DATA_DIR="/data/harbor"
       
       echo "📦 Installing Harbor ${HARBOR_VERSION}..."
       
       # Create harbor directories
-      mkdir -p ${HARBOR_DIR}
-      mkdir -p ${HARBOR_DATA_DIR}
+      mkdir -p /opt/harbor
+      mkdir -p /data/harbor
       
       # Download Harbor
       cd /tmp
       wget -q https://github.com/goharbor/harbor/releases/download/${HARBOR_VERSION}/harbor-offline-installer-${HARBOR_VERSION}.tgz
       tar xvf harbor-offline-installer-${HARBOR_VERSION}.tgz
-      cp -r harbor/* ${HARBOR_DIR}/
+      cp -r harbor/* /opt/harbor/
       
       # Create Harbor configuration
-      cd ${HARBOR_DIR}
+      cd /opt/harbor
       cp harbor.yml.tmpl harbor.yml
       
       # Configure Harbor with SSL disabled
-      cat <<EOF > ${HARBOR_DIR}/harbor.yml
+      cat <<EOF > /opt/harbor/harbor.yml
       # Configuration file of Harbor
       
       # The IP address or hostname to access admin UI and registry service.
@@ -142,8 +139,8 @@ write_files:
         max_open_conns: 1000
       
       # The default data volume
-      data_volume: ${HARBOR_DATA_DIR}
-      
+      data_volume: /data/harbor
+
       # Harbor Storage settings by default is using /data dir on local filesystem
       # Uncomment storage_service setting If you want to using external storage
       # storage_service:
@@ -316,7 +313,7 @@ write_files:
       
       # Install Harbor
       echo "🚀 Installing Harbor..."
-      ${HARBOR_DIR}/install.sh --with-trivy
+      /opt/harbor/install.sh --with-trivy
       
       # Wait for Harbor to start
       echo "⏳ Waiting for Harbor to start..."
@@ -327,12 +324,11 @@ write_files:
       
       # Create proxy cache projects for common registries
       HARBOR_HOST=$(hostname -I | awk '{print $1}')
-      HARBOR_URL="http://${HARBOR_HOST}"
-      HARBOR_USER="admin"
-      HARBOR_PASS="Harbor12345"
+      HARBOR_URL="http://$HARBOR_HOST"
+
       
       # Wait for Harbor API to be available
-      until curl -f -s "${HARBOR_URL}/api/v2.0/systeminfo" > /dev/null; do
+      until curl -f -s "$HARBOR_URL/api/v2.0/systeminfo" > /dev/null; do
         echo "Waiting for Harbor API to be available..."
         sleep 10
       done
@@ -346,13 +342,13 @@ write_files:
         echo "Creating proxy cache project: ${project_name}"
         
         # Create registry endpoint
-        curl -X POST "${HARBOR_URL}/api/v2.0/registries" \
+        curl -X POST "$HARBOR_URL/api/v2.0/registries" \
           -H "Content-Type: application/json" \
           -u "${HARBOR_USER}:${HARBOR_PASS}" \
           -d "{
-            \"name\": \"${registry_name}\",
+            \"name\": \"$registry_name\",
             \"type\": \"docker-registry\",
-            \"url\": \"${registry_url}\",
+            \"url\": \"$registry_url\",
             \"insecure\": true,
             \"credential\": {
               \"type\": \"basic\",
@@ -362,17 +358,17 @@ write_files:
           }"
         
         # Get registry ID
-        REGISTRY_ID=$(curl -s "${HARBOR_URL}/api/v2.0/registries" \
+        REGISTRY_ID=$(curl -s "$HARBOR_URL/api/v2.0/registries" \
           -u "${HARBOR_USER}:${HARBOR_PASS}" | \
           jq -r ".[] | select(.name==\"${registry_name}\") | .id")
         
         # Create proxy cache project
-        curl -X POST "${HARBOR_URL}/api/v2.0/projects" \
+        curl -X POST "$HARBOR_URL/api/v2.0/projects" \
           -H "Content-Type: application/json" \
           -u "${HARBOR_USER}:${HARBOR_PASS}" \
           -d "{
-            \"project_name\": \"${project_name}\",
-            \"registry_id\": ${REGISTRY_ID},
+            \"project_name\": \"$project_name\",
+            \"registry_id\": $REGISTRY_ID,
             \"metadata\": {
               \"public\": \"true\"
             }
@@ -396,9 +392,9 @@ write_files:
       
       [Service]
       Type=oneshot
-      ExecStart=${HARBOR_DIR}/prepare && /usr/bin/docker-compose -f ${HARBOR_DIR}/docker-compose.yml up -d
-      ExecStop=/usr/bin/docker-compose -f ${HARBOR_DIR}/docker-compose.yml down
-      WorkingDirectory=${HARBOR_DIR}
+      ExecStart=/opt/harbor/prepare && /usr/bin/docker-compose -f /opt/harbor/docker-compose.yml up -d
+      ExecStop=/usr/bin/docker-compose -f /opt/harbor/docker-compose.yml down
+      WorkingDirectory=/opt/harbor
       RemainAfterExit=yes
       
       [Install]
@@ -418,7 +414,7 @@ write_files:
       # Create helper script for Harbor management
       cat <<EOF > /usr/local/bin/harbor-manage
       #!/bin/bash
-      cd ${HARBOR_DIR}
+      cd /opt/harbor
       case "\$1" in
         start)
           docker-compose up -d
@@ -446,19 +442,19 @@ write_files:
       chmod +x /usr/local/bin/harbor-manage
       
       echo "✅ Harbor installation completed!"
-      echo "🌐 Harbor is available at: http://${HARBOR_HOST}"
+      echo "🌐 Harbor is available at: http://$HARBOR_HOST"
       echo "👤 Default admin credentials: admin / Harbor12345"
       echo "🔧 Use 'harbor-manage' command to manage Harbor service"
       echo ""
       echo "📋 Proxy cache projects created:"
-      echo "  - dockerhub (Docker Hub): ${HARBOR_HOST}/dockerhub/"
-      echo "  - gcr (Google Container Registry): ${HARBOR_HOST}/gcr/"
-      echo "  - quay (Quay.io): ${HARBOR_HOST}/quay/"
-      echo "  - k8s-gcr (Kubernetes GCR): ${HARBOR_HOST}/k8s-gcr/"
-      echo "  - registry-k8s (Kubernetes Registry): ${HARBOR_HOST}/registry-k8s/"
+      echo "  - dockerhub (Docker Hub): $HARBOR_HOST/dockerhub/"
+      echo "  - gcr (Google Container Registry): $HARBOR_HOST/gcr/"
+      echo "  - quay (Quay.io): $HARBOR_HOST/quay/"
+      echo "  - k8s-gcr (Kubernetes GCR): $HARBOR_HOST/k8s-gcr/"
+      echo "  - registry-k8s (Kubernetes Registry): $HARBOR_HOST/registry-k8s/"
       echo ""
       echo "🚀 Configure your Kubernetes cluster to use Harbor as pull-through cache:"
-      echo "  Example: docker pull ${HARBOR_HOST}/dockerhub/nginx:latest"
+      echo "  Example: docker pull $HARBOR_HOST/dockerhub/nginx:latest"
       
 
   - path: /usr/local/bin/performance-tuning.sh

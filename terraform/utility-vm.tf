@@ -26,6 +26,7 @@ resource "proxmox_virtual_environment_file" "utility_cloud_init_config" {
         MONITORED_RESOURCE_LOCATION = var.REGION
         MONITORED_RESOURCE_NAMESPACE = var.MONITORED_RESOURCE_NAMESPACE
         MONITORED_RESOURCE_NODE_ID = var.utility_hostname
+        HARBOR_VERSION = var.HARBOR_VERSION
       })
     file_name = "cloud_init_utility_vm.yaml"
   }

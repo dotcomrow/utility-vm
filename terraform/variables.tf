@@ -125,3 +125,20 @@ variable "hugepages_value" {
   default     = 1024
 }
 
+variable "HARBOR_VERSION" {
+  description = "Version of Harbor to deploy"
+  type        = string
+  default     = "v2.11.1"
+}
+
+variable "HARBOR_USER" {
+  description = "Username for Harbor admin"
+  type        = string
+  default     = "admin"
+}
+
+variable "HARBOR_PASS" {
+  description = "Password for Harbor admin"
+  type        = string
+  default     = "Harbor12345"
+}
