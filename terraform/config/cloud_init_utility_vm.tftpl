@@ -156,8 +156,8 @@ write_files:
       # These values will be set by the configuration API call
       oidc_name: GitHub
       oidc_endpoint: https://github.com/login/oauth/authorize
-      oidc_client_id: ${GITHUB_OIDC_CLIENT_ID}
-      oidc_client_secret: ${GITHUB_OIDC_CLIENT_SECRET}
+      oidc_client_id: ${HARBOR_OIDC_CLIENT_ID}
+      oidc_client_secret: ${HARBOR_OIDC_SECRET}
       oidc_scope: read:user,read:org
       oidc_verify_cert: true
       oidc_auto_onboard: true
