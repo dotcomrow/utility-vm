@@ -35,7 +35,7 @@ resource "proxmox_virtual_environment_file" "utility_cloud_init_config" {
 }
 
 # Define the Proxmox Virtual Machine using BGP Proxmox Provider
-resource "proxmox_virtual_environment_vm" "utility_rancher_vm" {
+resource "proxmox_virtual_environment_vm" "utility_vm" {
   name      = var.utility_hostname
   node_name = var.node_name
   stop_on_destroy = false
