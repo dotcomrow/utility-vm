@@ -401,7 +401,7 @@ write_files:
         
         # Create registry endpoint first
         echo "Creating registry endpoint: $registry_name"
-        REGISTRY_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/registries" \
+        REGISTRY_RESPONSE=$(curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/registries" \
           -H "Content-Type: application/json" \
           -u "${HARBOR_USER}:${HARBOR_PASS}" \
           -d "{
@@ -450,7 +450,7 @@ write_files:
         
         # Create proxy cache project
         echo "Creating proxy cache project: $project_name with registry ID: $REGISTRY_ID"
-        PROJECT_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects" \
+        PROJECT_RESPONSE=$(curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects" \
           -H "Content-Type: application/json" \
           -u "${HARBOR_USER}:${HARBOR_PASS}" \
           -d "{
@@ -488,7 +488,7 @@ write_files:
       
       # Update Harbor configuration to use OIDC
       echo "Configuring OIDC authentication..."
-      OIDC_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
+      OIDC_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
         -H "Content-Type: application/json" \
         -u "${HARBOR_USER}:${HARBOR_PASS}" \
         -d "{
@@ -521,7 +521,7 @@ write_files:
       
       # Create harbor_admins group
       echo "Creating harbor_admins group..."
-      ADMIN_GROUP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/usergroups" \
+      ADMIN_GROUP_RESPONSE=$(curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/usergroups" \
         -H "Content-Type: application/json" \
         -u "${HARBOR_USER}:${HARBOR_PASS}" \
         -d "{
@@ -539,7 +539,7 @@ write_files:
       
       # Create harbor_users group  
       echo "Creating harbor_users group..."
-      USER_GROUP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/usergroups" \
+      USER_GROUP_RESPONSE=$(curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/usergroups" \
         -H "Content-Type: application/json" \
         -u "${HARBOR_USER}:${HARBOR_PASS}" \
         -d "{
@@ -573,7 +573,7 @@ write_files:
       # Add harbor_admins group as system admin (to library project - project ID 1)
       if [ ! -z "$ADMIN_GROUP_ID" ] && [ "$ADMIN_GROUP_ID" != "null" ]; then
         echo "Adding harbor_admins group to library project with admin role..."
-        curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects/1/members" \
+        curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects/1/members" \
           -H "Content-Type: application/json" \
           -u "${HARBOR_USER}:${HARBOR_PASS}" \
           -d "{
@@ -604,7 +604,7 @@ write_files:
             jq -r '.[0].project_id // empty' 2>/dev/null)
           
           if [ ! -z "$PROJECT_ID" ] && [ "$PROJECT_ID" != "null" ]; then
-            curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects/$PROJECT_ID/members" \
+            curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects/$PROJECT_ID/members" \
               -H "Content-Type: application/json" \
               -u "${HARBOR_USER}:${HARBOR_PASS}" \
               -d "{
