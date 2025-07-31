@@ -107,7 +107,6 @@ resource "proxmox_virtual_environment_vm" "utility_rancher_vm" {
 
   # Make sure all other resources are completed first before building the VM's.  Rancher K8S is dependant on everything happening before it installs.
   depends_on = [ 
-    null_resource.download_iso, 
-    null_resource.ghcr_to_gcp_image_sync
+    null_resource.download_iso
   ]
 }
