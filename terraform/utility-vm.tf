@@ -118,3 +118,42 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
     null_resource.download_iso
   ]
 }
+
+# Proxmox backup schedule for utility VM
+resource "proxmox_virtual_environment_backup_job" "utility_vm_backup" {
+  node_name = var.node_name
+  
+  # Schedule: Every Sunday at 2:00 AM
+  schedule = "0 2 * * 0"
+  
+  # VM selection
+  vm_ids = [proxmox_virtual_environment_vm.utility_vm.vm_id]
+  
+  # Storage destination
+  storage = "gcs-backup"
+  
+  # Backup settings
+  enabled = true
+  comment = "Weekly backup of utility VM - Harbor registry cache"
+  
+  # Backup options
+  mode           = "snapshot"    # Use snapshot for minimal downtime
+  compression    = "zstd"        # Good compression with reasonable speed
+  protected      = false         # Allow manual deletion of backups
+  
+  # Retention policy - keep 4 weekly backups (1 month)
+  retention_policy {
+    keep_last    = 4
+    keep_weekly  = 4
+  }
+  
+  # Email notifications (optional - configure SMTP in Proxmox first)
+  notification_policy {
+    target = "root@pam"
+    on_failure = true
+  }
+  
+  depends_on = [
+    proxmox_virtual_environment_vm.utility_vm
+  ]
+}
