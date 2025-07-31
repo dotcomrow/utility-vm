@@ -339,7 +339,7 @@ write_files:
         local registry_url=$2
         local registry_name=$3
         
-        echo "Creating proxy cache project: ${project_name}"
+        echo "Creating proxy cache project: $project_name"
         
         # Create registry endpoint
         curl -X POST "$HARBOR_URL/api/v2.0/registries" \
@@ -360,7 +360,7 @@ write_files:
         # Get registry ID
         REGISTRY_ID=$(curl -s "$HARBOR_URL/api/v2.0/registries" \
           -u "${HARBOR_USER}:${HARBOR_PASS}" | \
-          jq -r ".[] | select(.name==\"${registry_name}\") | .id")
+          jq -r ".[] | select(.name==\"$registry_name\") | .id")
         
         # Create proxy cache project
         curl -X POST "$HARBOR_URL/api/v2.0/projects" \
