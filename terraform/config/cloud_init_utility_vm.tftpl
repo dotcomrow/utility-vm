@@ -1,6 +1,22 @@
 #cloud-config
 hostname: ${hostname}
 
+# Network configuration for static IP
+network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: false
+      addresses:
+        - 10.0.0.200/24
+      gateway4: 10.0.0.10
+      nameservers:
+        addresses:
+          - 10.0.0.10
+          - 8.8.8.8
+        search:
+          - internal.lan
+
 users:
   - name: ubuntu
     sudo: ["ALL=(ALL) NOPASSWD:ALL"]
