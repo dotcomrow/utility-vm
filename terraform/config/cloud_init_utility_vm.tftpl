@@ -74,10 +74,392 @@ write_files:
       /usr/local/bin/disable-swap.sh
       /usr/local/bin/setup-docker.sh
       /usr/local/bin/setup-fluentbit.sh
+      /usr/local/bin/setup-utility.sh
 
       systemctl enable qemu-guest-agent
       systemctl start qemu-guest-agent
       systemctl daemon-reload
+
+  - path: /usr/local/bin/setup-utility.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      echo "🔧 Setting up utility VM..."
+
+      # Harbor installation and configuration
+      HARBOR_VERSION="v2.11.1"
+      HARBOR_DIR="/opt/harbor"
+      HARBOR_DATA_DIR="/data/harbor"
+      
+      echo "📦 Installing Harbor ${HARBOR_VERSION}..."
+      
+      # Create harbor directories
+      mkdir -p ${HARBOR_DIR}
+      mkdir -p ${HARBOR_DATA_DIR}
+      
+      # Download Harbor
+      cd /tmp
+      wget -q https://github.com/goharbor/harbor/releases/download/${HARBOR_VERSION}/harbor-offline-installer-${HARBOR_VERSION}.tgz
+      tar xvf harbor-offline-installer-${HARBOR_VERSION}.tgz
+      cp -r harbor/* ${HARBOR_DIR}/
+      
+      # Create Harbor configuration
+      cd ${HARBOR_DIR}
+      cp harbor.yml.tmpl harbor.yml
+      
+      # Configure Harbor with SSL disabled
+      cat <<EOF > ${HARBOR_DIR}/harbor.yml
+      # Configuration file of Harbor
+      
+      # The IP address or hostname to access admin UI and registry service.
+      hostname: $(hostname -I | awk '{print $1}')
+      
+      # http related config
+      http:
+        # port for http, default is 80. If https enabled, this port will redirect to https port
+        port: 80
+      
+      # https related config - DISABLED for pull-through cache
+      # https:
+      #   port: 443
+      #   certificate:
+      #   private_key:
+      
+      # Uncomment external_url if you want to enable external proxy
+      # And when it enabled the hostname will no longer used
+      # external_url: https://reg.mydomain.com:8433
+      
+      # The initial password of Harbor admin
+      harbor_admin_password: Harbor12345
+      
+      # Harbor DB configuration
+      database:
+        # The password for the root user of Harbor DB
+        password: root123
+        # The maximum number of connections in the idle connection pool
+        max_idle_conns: 50
+        # The maximum number of open connections to the database
+        max_open_conns: 1000
+      
+      # The default data volume
+      data_volume: ${HARBOR_DATA_DIR}
+      
+      # Harbor Storage settings by default is using /data dir on local filesystem
+      # Uncomment storage_service setting If you want to using external storage
+      # storage_service:
+      #   # ca_bundle is the path to the custom root ca certificate, which will be injected into the truststore
+      #   # of registry's and chart repository's containers.  This is usually needed when the user hosts a internal storage with self signed certificate.
+      #   ca_bundle:
+      
+      #   # storage backend, default is filesystem, options include filesystem, azure, gcs, s3, swift and oss
+      #   # for more info about this configuration please refer https://docs.docker.com/registry/configuration/
+      #   filesystem:
+      #     maxthreads: 100
+      
+      # Trivy configuration
+      trivy:
+        # ignoreUnfixed The flag to display only fixed vulnerabilities
+        ignore_unfixed: false
+        # skipUpdate The flag to enable or disable Trivy DB downloads from GitHub
+        skip_update: false
+        # The offline_scan option prevents Trivy from sending API requests to identify dependencies.
+        offline_scan: false
+        # insecure The flag to skip verifying registry certificate
+        insecure: false
+      
+      jobservice:
+        # Maximum number of job workers in job service
+        max_job_workers: 10
+      
+      notification:
+        # Maximum retry count for webhook job
+        webhook_job_max_retry: 10
+      
+      chart:
+        # Change the value of absolute_url to enabled can enable absolute url in chart
+        absolute_url: disabled
+      
+      # Log configurations
+      log:
+        # options are debug, info, warning, error, fatal
+        level: info
+        # configs for logs in local storage
+        local:
+          # Log files are rotated log_rotate_count times before being removed. If count is 0, old versions are removed rather than rotated.
+          rotate_count: 50
+          # Log files are rotated only if they grow bigger than log_rotate_size bytes. If size is followed by k, the size is assumed to be in kilobytes.
+          # If the M is used, the size is in megabytes, and if G is used, the size is in gigabytes. So size 100, size 100k, size 100M and size 100G
+          # are all valid.
+          rotate_size: 200M
+          # The directory on your host that store log
+          location: /var/log/harbor
+      
+      #This attribute is for migrator to detect the version of the .cfg file, DO NOT MODIFY!
+      _version: 2.11.0
+      
+      # Uncomment external_database if using external database.
+      # external_database:
+      #   harbor:
+      #     host: harbor_db_host
+      #     port: harbor_db_port
+      #     db_name: harbor_db_name
+      #     username: harbor_db_username
+      #     password: harbor_db_password
+      #     ssl_mode: disable
+      #     max_idle_conns: 2
+      #     max_open_conns: 0
+      #   notary_signer:
+      #     host: notary_signer_db_host
+      #     port: notary_signer_db_port
+      #     db_name: notary_signer_db_name
+      #     username: notary_signer_db_username
+      #     password: notary_signer_db_password
+      #     ssl_mode: disable
+      #   notary_server:
+      #     host: notary_server_db_host
+      #     port: notary_server_db_port
+      #     db_name: notary_server_db_name
+      #     username: notary_server_db_username
+      #     password: notary_server_db_password
+      #     ssl_mode: disable
+      
+      # Uncomment external_redis if using external Redis server
+      # external_redis:
+      #   # support redis, redis+sentinel
+      #   # host for redis: <host_redis>:<port_redis>
+      #   # host for redis+sentinel:
+      #   #  <host_sentinel1>:<port_sentinel1>,<host_sentinel2>:<port_sentinel2>,<host_sentinel3>:<port_sentinel3>
+      #   host: redis:6379
+      #   password:
+      #   # sentinel_master_set must be set to support redis+sentinel
+      #   #sentinel_master_set:
+      #   # db_index 0 is for core, it's unchangeable
+      #   # db_index 1 is for jobservice
+      #   # db_index 2 is for trivy
+      #   db_index: 0
+      
+      # Uncomment uaa for trusting the certificate of uaa instance that is hosted via self-signed cert.
+      # uaa:
+      #   ca_file: /path/to/ca
+      
+      # Global proxy
+      # Config http proxy for components, e.g. http://my.proxy.com:3128
+      # Components doesn't need to connect to each others via http proxy.
+      # Remove component from `components` array if want disable proxy
+      # for it. If you want use proxy for replication, MUST enable proxy
+      # for core and jobservice, and set `http_proxy` and `https_proxy`.
+      # Add domain to the `no_proxy` list when want disable proxy
+      # for some special registry
+      proxy:
+        http_proxy:
+        https_proxy:
+        no_proxy:
+        components:
+          - core
+          - jobservice
+          - trivy
+      
+      # metric:
+      #   enabled: false
+      #   port: 9090
+      #   path: /metrics
+      
+      # Trace related config
+      # only can enable one trace at the same time.
+      # trace:
+      #   enabled: true
+      #   # set sample_rate to 1 if you wanna sampling 100% of trace data; set 0.5 if you wanna sampling 50% of trace data, and so forth
+      #   sample_rate: 1
+      #   # # namespace used to differentiate different harbor services
+      #   # namespace:
+      #   # # attributes is a key value dict contains user defined attributes used to initialize trace provider
+      #   # attributes:
+      #   #   application: harbor
+      #   # # jaeger should be 1.26 or newer.
+      #   # jaeger:
+      #   #   endpoint: http://hostname:14268/api/traces
+      #   #   username:
+      #   #   password:
+      #   #   agent_host: hostname
+      #   #   agent_port: 6832
+      #   # otel:
+      #   #   endpoint: hostname:4318
+      #   #   url_path: /v1/traces
+      #   #   compression: false
+      #   #   insecure: true
+      #   #   timeout: 10s
+      
+      # enable purge _upload directories
+      upload_purging:
+        enabled: true
+        # remove files in _upload directories which exist for a period of time, default is one week.
+        age: 168h
+        # the interval of the purge operations
+        interval: 24h
+        dryrun: false
+      
+      # cache layer configurations
+      # If this feature enabled, harbor will cache the resource
+      # `project/project_metadata/repository/artifact/manifest` in the redis
+      # which can especially help to improve the performance of high concurrent
+      # manifest pulling.
+      # NOTICE
+      # If you are deploying Harbor in HA mode, make sure that all the harbor
+      # instances have the same behaviour, all with caching enabled or disabled,
+      # otherwise it can lead to potential data inconsistency.
+      cache:
+        # default is not enabled.
+        enabled: false
+        # default keep cache for one day.
+        expire_hours: 24
+      EOF
+      
+      # Install Harbor
+      echo "🚀 Installing Harbor..."
+      ${HARBOR_DIR}/install.sh --with-trivy
+      
+      # Wait for Harbor to start
+      echo "⏳ Waiting for Harbor to start..."
+      sleep 30
+      
+      # Configure Harbor as pull-through cache
+      echo "🔧 Configuring Harbor as pull-through cache..."
+      
+      # Create proxy cache projects for common registries
+      HARBOR_HOST=$(hostname -I | awk '{print $1}')
+      HARBOR_URL="http://${HARBOR_HOST}"
+      HARBOR_USER="admin"
+      HARBOR_PASS="Harbor12345"
+      
+      # Wait for Harbor API to be available
+      until curl -f -s "${HARBOR_URL}/api/v2.0/systeminfo" > /dev/null; do
+        echo "Waiting for Harbor API to be available..."
+        sleep 10
+      done
+      
+      # Function to create proxy cache project
+      create_proxy_project() {
+        local project_name=$1
+        local registry_url=$2
+        local registry_name=$3
+        
+        echo "Creating proxy cache project: ${project_name}"
+        
+        # Create registry endpoint
+        curl -X POST "${HARBOR_URL}/api/v2.0/registries" \
+          -H "Content-Type: application/json" \
+          -u "${HARBOR_USER}:${HARBOR_PASS}" \
+          -d "{
+            \"name\": \"${registry_name}\",
+            \"type\": \"docker-registry\",
+            \"url\": \"${registry_url}\",
+            \"insecure\": true,
+            \"credential\": {
+              \"type\": \"basic\",
+              \"access_key\": \"\",
+              \"access_secret\": \"\"
+            }
+          }"
+        
+        # Get registry ID
+        REGISTRY_ID=$(curl -s "${HARBOR_URL}/api/v2.0/registries" \
+          -u "${HARBOR_USER}:${HARBOR_PASS}" | \
+          jq -r ".[] | select(.name==\"${registry_name}\") | .id")
+        
+        # Create proxy cache project
+        curl -X POST "${HARBOR_URL}/api/v2.0/projects" \
+          -H "Content-Type: application/json" \
+          -u "${HARBOR_USER}:${HARBOR_PASS}" \
+          -d "{
+            \"project_name\": \"${project_name}\",
+            \"registry_id\": ${REGISTRY_ID},
+            \"metadata\": {
+              \"public\": \"true\"
+            }
+          }"
+      }
+      
+      # Create proxy cache projects for popular registries
+      create_proxy_project "dockerhub" "https://registry-1.docker.io" "docker-hub"
+      create_proxy_project "gcr" "https://gcr.io" "google-gcr"
+      create_proxy_project "quay" "https://quay.io" "quay-io"
+      create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
+      create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
+      
+      # Create systemd service for Harbor management
+      cat <<EOF > /etc/systemd/system/harbor.service
+      [Unit]
+      Description=Harbor
+      After=docker.service systemd-networkd.service systemd-resolved.service
+      Requires=docker.service
+      Documentation=http://github.com/goharbor/harbor
+      
+      [Service]
+      Type=oneshot
+      ExecStart=${HARBOR_DIR}/prepare && /usr/bin/docker-compose -f ${HARBOR_DIR}/docker-compose.yml up -d
+      ExecStop=/usr/bin/docker-compose -f ${HARBOR_DIR}/docker-compose.yml down
+      WorkingDirectory=${HARBOR_DIR}
+      RemainAfterExit=yes
+      
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+      
+      systemctl daemon-reload
+      systemctl enable harbor
+      
+      # Install docker-compose if not present
+      if ! command -v docker-compose &> /dev/null; then
+        echo "📦 Installing docker-compose..."
+        curl -L "https://github.com/docker/compose/releases/download/v2.24.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+      fi
+      
+      # Create helper script for Harbor management
+      cat <<EOF > /usr/local/bin/harbor-manage
+      #!/bin/bash
+      cd ${HARBOR_DIR}
+      case "\$1" in
+        start)
+          docker-compose up -d
+          ;;
+        stop)
+          docker-compose down
+          ;;
+        restart)
+          docker-compose down
+          docker-compose up -d
+          ;;
+        status)
+          docker-compose ps
+          ;;
+        logs)
+          docker-compose logs -f
+          ;;
+        *)
+          echo "Usage: \$0 {start|stop|restart|status|logs}"
+          exit 1
+          ;;
+      esac
+      EOF
+      
+      chmod +x /usr/local/bin/harbor-manage
+      
+      echo "✅ Harbor installation completed!"
+      echo "🌐 Harbor is available at: http://${HARBOR_HOST}"
+      echo "👤 Default admin credentials: admin / Harbor12345"
+      echo "🔧 Use 'harbor-manage' command to manage Harbor service"
+      echo ""
+      echo "📋 Proxy cache projects created:"
+      echo "  - dockerhub (Docker Hub): ${HARBOR_HOST}/dockerhub/"
+      echo "  - gcr (Google Container Registry): ${HARBOR_HOST}/gcr/"
+      echo "  - quay (Quay.io): ${HARBOR_HOST}/quay/"
+      echo "  - k8s-gcr (Kubernetes GCR): ${HARBOR_HOST}/k8s-gcr/"
+      echo "  - registry-k8s (Kubernetes Registry): ${HARBOR_HOST}/registry-k8s/"
+      echo ""
+      echo "🚀 Configure your Kubernetes cluster to use Harbor as pull-through cache:"
+      echo "  Example: docker pull ${HARBOR_HOST}/dockerhub/nginx:latest"
+      
 
   - path: /usr/local/bin/performance-tuning.sh
     permissions: '0755'
