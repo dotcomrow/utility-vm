@@ -167,6 +167,14 @@ write_files:
       jobservice:
         # Maximum number of job workers in job service
         max_job_workers: 10
+        # Loggers for the job service
+        job_loggers:
+          - name: "FILE"
+            level: INFO
+            settings:
+              base_dir: "/var/log/jobs"
+          - name: "STD_OUTPUT"
+            level: INFO
       
       notification:
         # Maximum retry count for webhook job
