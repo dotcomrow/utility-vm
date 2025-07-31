@@ -177,10 +177,14 @@ write_files:
               base_dir: "/var/log/jobs"
           - name: "STD_OUTPUT"
             level: INFO
+        # Logger sweeper duration
+        logger_sweeper_duration: 1
       
       notification:
         # Maximum retry count for webhook job
         webhook_job_max_retry: 10
+        # HTTP client timeout for webhook jobs (in seconds)
+        webhook_job_http_client_timeout: 10
       
       chart:
         # Change the value of absolute_url to enabled can enable absolute url in chart
