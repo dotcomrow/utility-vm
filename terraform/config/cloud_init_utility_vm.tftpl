@@ -148,6 +148,24 @@ write_files:
       # The initial password of Harbor admin
       harbor_admin_password: Harbor12345
       
+      # Authentication configuration
+      # Initial mode - will be changed to oidc_auth via API after setup
+      auth_mode: db_auth
+      
+      # OIDC authentication settings - configured via API post-installation
+      # These values will be set by the configuration API call
+      oidc_name: GitHub
+      oidc_endpoint: https://github.com/login/oauth/authorize
+      oidc_client_id: ${GITHUB_OIDC_CLIENT_ID}
+      oidc_client_secret: ${GITHUB_OIDC_CLIENT_SECRET}
+      oidc_scope: read:user,read:org
+      oidc_verify_cert: true
+      oidc_auto_onboard: true
+      oidc_user_claim: login
+      oidc_groups_claim: groups
+      oidc_admin_group: harbor_admins
+      oidc_group_filter: harbor_users,harbor_admins
+      
       # Harbor DB configuration
       database:
         # The password for the root user of Harbor DB
@@ -360,11 +378,18 @@ write_files:
       export HARBOR_PASS=${HARBOR_PASS}
 
       
-      # Wait for Harbor API to be available
+      # Wait for Harbor API to be available with better timing
+      echo "⏳ Waiting for Harbor API to be fully ready..."
+      sleep 60  # Give Harbor more time to fully initialize
+      
       until curl -f -s "$HARBOR_URL/api/v2.0/systeminfo" > /dev/null; do
         echo "Waiting for Harbor API to be available..."
-        sleep 10
+        sleep 15
       done
+      
+      # Wait additional time for Harbor to be fully operational
+      echo "✅ Harbor API available, waiting for full initialization..."
+      sleep 30
       
       # Function to create proxy cache project
       create_proxy_project() {
@@ -374,29 +399,58 @@ write_files:
         
         echo "Creating proxy cache project: $project_name"
         
-        # Create registry endpoint
-        curl -X POST "$HARBOR_URL/api/v2.0/registries" \
+        # Create registry endpoint first
+        echo "Creating registry endpoint: $registry_name"
+        REGISTRY_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/registries" \
           -H "Content-Type: application/json" \
           -u "${HARBOR_USER}:${HARBOR_PASS}" \
           -d "{
             \"name\": \"$registry_name\",
             \"type\": \"docker-registry\",
             \"url\": \"$registry_url\",
-            \"insecure\": true,
+            \"insecure\": false,
             \"credential\": {
               \"type\": \"basic\",
               \"access_key\": \"\",
               \"access_secret\": \"\"
             }
-          }"
+          }")
+        
+        HTTP_CODE=$(echo "$REGISTRY_RESPONSE" | tail -n1)
+        RESPONSE_BODY=$(echo "$REGISTRY_RESPONSE" | head -n -1)
+        
+        if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "409" ]; then
+          echo "❌ Failed to create registry $registry_name (HTTP $HTTP_CODE): $RESPONSE_BODY"
+          return 1
+        fi
+        
+        # Wait a moment for registry to be created
+        sleep 5
         
         # Get registry ID
-        REGISTRY_ID=$(curl -s "$HARBOR_URL/api/v2.0/registries" \
-          -u "${HARBOR_USER}:${HARBOR_PASS}" | \
-          jq -r ".[] | select(.name==\"$registry_name\") | .id")
+        echo "Getting registry ID for: $registry_name"
+        REGISTRY_ID=""
+        for i in {1..10}; do
+          REGISTRY_ID=$(curl -s "$HARBOR_URL/api/v2.0/registries" \
+            -u "${HARBOR_USER}:${HARBOR_PASS}" | \
+            jq -r ".[] | select(.name==\"$registry_name\") | .id" 2>/dev/null)
+          
+          if [ ! -z "$REGISTRY_ID" ] && [ "$REGISTRY_ID" != "null" ]; then
+            echo "✅ Found registry ID: $REGISTRY_ID"
+            break
+          fi
+          echo "Waiting for registry to be available... (attempt $i/10)"
+          sleep 3
+        done
+        
+        if [ -z "$REGISTRY_ID" ] || [ "$REGISTRY_ID" == "null" ]; then
+          echo "❌ Failed to get registry ID for $registry_name"
+          return 1
+        fi
         
         # Create proxy cache project
-        curl -X POST "$HARBOR_URL/api/v2.0/projects" \
+        echo "Creating proxy cache project: $project_name with registry ID: $REGISTRY_ID"
+        PROJECT_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects" \
           -H "Content-Type: application/json" \
           -u "${HARBOR_USER}:${HARBOR_PASS}" \
           -d "{
@@ -405,7 +459,18 @@ write_files:
             \"metadata\": {
               \"public\": \"true\"
             }
-          }"
+          }")
+        
+        PROJECT_HTTP_CODE=$(echo "$PROJECT_RESPONSE" | tail -n1)
+        PROJECT_RESPONSE_BODY=$(echo "$PROJECT_RESPONSE" | head -n -1)
+        
+        if [ "$PROJECT_HTTP_CODE" != "201" ] && [ "$PROJECT_HTTP_CODE" != "409" ]; then
+          echo "❌ Failed to create project $project_name (HTTP $PROJECT_HTTP_CODE): $PROJECT_RESPONSE_BODY"
+          return 1
+        fi
+        
+        echo "✅ Successfully created proxy cache project: $project_name"
+        sleep 2  # Brief pause between projects
       }
       
       # Create proxy cache projects for popular registries
@@ -414,6 +479,160 @@ write_files:
       create_proxy_project "quay" "https://quay.io" "quay-io"
       create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
       create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
+      
+      # Configure GitHub OIDC authentication
+      echo "🔧 Configuring GitHub OIDC authentication..."
+      
+      # Wait for Harbor to be fully ready before configuring OIDC
+      sleep 15
+      
+      # Update Harbor configuration to use OIDC
+      echo "Configuring OIDC authentication..."
+      OIDC_RESPONSE=$(curl -s -w "\n%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
+        -H "Content-Type: application/json" \
+        -u "${HARBOR_USER}:${HARBOR_PASS}" \
+        -d "{
+          \"auth_mode\": \"oidc_auth\",
+          \"oidc_name\": \"GitHub\",
+          \"oidc_endpoint\": \"https://github.com/login/oauth/authorize\",
+          \"oidc_client_id\": \"${HARBOR_OIDC_CLIENT}\",
+          \"oidc_client_secret\": \"${HARBOR_OIDC_SECRET}\",
+          \"oidc_scope\": \"read:user,read:org\",
+          \"oidc_verify_cert\": true,
+          \"oidc_auto_onboard\": true,
+          \"oidc_user_claim\": \"login\",
+          \"oidc_groups_claim\": \"groups\",
+          \"oidc_admin_group\": \"harbor_admins\",
+          \"oidc_group_filter\": \"harbor_users,harbor_admins\"
+        }")
+      
+      OIDC_HTTP_CODE=$(echo "$OIDC_RESPONSE" | tail -n1)
+      OIDC_RESPONSE_BODY=$(echo "$OIDC_RESPONSE" | head -n -1)
+      
+      if [ "$OIDC_HTTP_CODE" != "200" ]; then
+        echo "⚠️  OIDC configuration may have failed (HTTP $OIDC_HTTP_CODE): $OIDC_RESPONSE_BODY"
+        echo "OIDC can be configured manually through Harbor UI"
+      else
+        echo "✅ OIDC configuration successful"
+      fi
+      
+      # Create user groups for GitHub teams
+      echo "👥 Creating user groups for GitHub teams..."
+      
+      # Create harbor_admins group
+      echo "Creating harbor_admins group..."
+      ADMIN_GROUP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/usergroups" \
+        -H "Content-Type: application/json" \
+        -u "${HARBOR_USER}:${HARBOR_PASS}" \
+        -d "{
+          \"group_name\": \"harbor_admins\",
+          \"group_type\": 2,
+          \"ldap_group_dn\": \"harbor_admins\"
+        }")
+      
+      ADMIN_HTTP_CODE=$(echo "$ADMIN_GROUP_RESPONSE" | tail -n1)
+      if [ "$ADMIN_HTTP_CODE" != "201" ] && [ "$ADMIN_HTTP_CODE" != "409" ]; then
+        echo "⚠️  Failed to create harbor_admins group (HTTP $ADMIN_HTTP_CODE)"
+      else
+        echo "✅ harbor_admins group created"
+      fi
+      
+      # Create harbor_users group  
+      echo "Creating harbor_users group..."
+      USER_GROUP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/usergroups" \
+        -H "Content-Type: application/json" \
+        -u "${HARBOR_USER}:${HARBOR_PASS}" \
+        -d "{
+          \"group_name\": \"harbor_users\",
+          \"group_type\": 2,
+          \"ldap_group_dn\": \"harbor_users\"
+        }")
+      
+      USER_HTTP_CODE=$(echo "$USER_GROUP_RESPONSE" | tail -n1)
+      if [ "$USER_HTTP_CODE" != "201" ] && [ "$USER_HTTP_CODE" != "409" ]; then
+        echo "⚠️  Failed to create harbor_users group (HTTP $USER_HTTP_CODE)"
+      else
+        echo "✅ harbor_users group created"
+      fi
+      
+      # Get group IDs for role assignment
+      echo "Getting group IDs for role assignment..."
+      sleep 5  # Allow groups to be fully created
+      
+      ADMIN_GROUP_ID=$(curl -s "$HARBOR_URL/api/v2.0/usergroups" \
+        -u "${HARBOR_USER}:${HARBOR_PASS}" | \
+        jq -r '.[] | select(.group_name=="harbor_admins") | .id' 2>/dev/null)
+      
+      USER_GROUP_ID=$(curl -s "$HARBOR_URL/api/v2.0/usergroups" \
+        -u "${HARBOR_USER}:${HARBOR_PASS}" | \
+        jq -r '.[] | select(.group_name=="harbor_users") | .id' 2>/dev/null)
+      
+      echo "Admin Group ID: $ADMIN_GROUP_ID"
+      echo "User Group ID: $USER_GROUP_ID"
+      
+      # Add harbor_admins group as system admin (to library project - project ID 1)
+      if [ ! -z "$ADMIN_GROUP_ID" ] && [ "$ADMIN_GROUP_ID" != "null" ]; then
+        echo "Adding harbor_admins group to library project with admin role..."
+        curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects/1/members" \
+          -H "Content-Type: application/json" \
+          -u "${HARBOR_USER}:${HARBOR_PASS}" \
+          -d "{
+            \"member_group\": {
+              \"id\": $ADMIN_GROUP_ID,
+              \"group_name\": \"harbor_admins\"
+            },
+            \"role_id\": 1
+          }" | tail -n1 | {
+            read http_code
+            if [ "$http_code" = "201" ] || [ "$http_code" = "409" ]; then
+              echo "✅ harbor_admins group added to library project"
+            else
+              echo "⚠️  Failed to add harbor_admins to library project (HTTP $http_code)"
+            fi
+          }
+      else
+        echo "⚠️  Could not find harbor_admins group ID"
+      fi
+      
+      # Add harbor_users group with limited read access to proxy cache projects
+      if [ ! -z "$USER_GROUP_ID" ] && [ "$USER_GROUP_ID" != "null" ]; then
+        echo "Adding harbor_users group to proxy cache projects..."
+        for project in dockerhub gcr quay k8s-gcr registry-k8s; do
+          echo "Adding harbor_users to project: $project"
+          PROJECT_ID=$(curl -s "$HARBOR_URL/api/v2.0/projects?name=$project" \
+            -u "${HARBOR_USER}:${HARBOR_PASS}" | \
+            jq -r '.[0].project_id // empty' 2>/dev/null)
+          
+          if [ ! -z "$PROJECT_ID" ] && [ "$PROJECT_ID" != "null" ]; then
+            curl -s -w "\n%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects/$PROJECT_ID/members" \
+              -H "Content-Type: application/json" \
+              -u "${HARBOR_USER}:${HARBOR_PASS}" \
+              -d "{
+                \"member_group\": {
+                  \"id\": $USER_GROUP_ID,
+                  \"group_name\": \"harbor_users\"
+                },
+                \"role_id\": 3
+              }" | tail -n1 | {
+                read http_code
+                if [ "$http_code" = "201" ] || [ "$http_code" = "409" ]; then
+                  echo "✅ harbor_users group added to $project project"
+                else
+                  echo "⚠️  Failed to add harbor_users to $project project (HTTP $http_code)"
+                fi
+              }
+          else
+            echo "⚠️  Could not find project ID for $project"
+          fi
+        done
+      else
+        echo "⚠️  Could not find harbor_users group ID"
+      fi
+      
+      echo "✅ GitHub OIDC authentication configured"
+      echo "👥 User groups configured:"
+      echo "  - harbor_admins: System administrators"
+      echo "  - harbor_users: Read-only access to proxy cache projects"
       
       # Create systemd service for Harbor management
       cat <<EOF > /etc/systemd/system/harbor.service
@@ -476,7 +695,16 @@ write_files:
       
       echo "✅ Harbor installation completed!"
       echo "🌐 Harbor is available at: http://$HARBOR_HOST"
-      echo "👤 Default admin credentials: admin / Harbor12345"
+      echo "� GitHub OIDC Authentication configured"
+      echo "👤 GitHub Teams configured:"
+      echo "  - harbor_admins: Full system administrative access"
+      echo "  - harbor_users: Read-only access to proxy cache projects"
+      echo ""
+      echo "⚠️  IMPORTANT: After first GitHub OIDC login, disable the built-in admin account:"
+      echo "   1. Login via GitHub OIDC as a member of harbor_admins team"
+      echo "   2. Go to Administration > Users"
+      echo "   3. Disable the 'admin' user account"
+      echo ""
       echo "🔧 Use 'harbor-manage' command to manage Harbor service"
       echo ""
       echo "📋 Proxy cache projects created:"

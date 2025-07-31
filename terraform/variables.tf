@@ -67,7 +67,6 @@ variable "GITHUB_ORG" {
 }
 
 
-
 variable "VM_DISK_STORAGE" {
   default = "Cluster"
 }
@@ -141,4 +140,17 @@ variable "HARBOR_PASS" {
   description = "Password for Harbor admin"
   type        = string
   default     = "Harbor12345"
+}
+
+variable "HARBOR_OIDC_CLIENT" {
+  description = "Harbor OIDC client ID for GitHub authentication"
+  type        = string
+  default     = "harbor-github-oidc"
+}
+
+variable "HARBOR_OIDC_SECRET" {
+  description = "Harbor OIDC client secret for GitHub authentication"
+  type        = string
+  sensitive   = true
+  default     = "supersecret"
 }

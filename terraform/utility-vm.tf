@@ -29,6 +29,8 @@ resource "proxmox_virtual_environment_file" "utility_cloud_init_config" {
         HARBOR_VERSION = var.HARBOR_VERSION
         HARBOR_USER = var.HARBOR_USER
         HARBOR_PASS = var.HARBOR_PASS
+        HARBOR_OIDC_CLIENT = var.HARBOR_OIDC_CLIENT
+        HARBOR_OIDC_SECRET = var.HARBOR_OIDC_SECRET
       })
     file_name = "cloud_init_utility_vm.yaml"
   }
