@@ -22,6 +22,10 @@ resource "proxmox_virtual_environment_file" "utility_cloud_init_config" {
         GCP_LOGGING_KEY = local.utility_credentials_json
         ssh_keys = join("\n      - ", [trimspace(var.admin_ssh_public_key)])
         UBUNTU_RELEASE_CODE_NAME = var.UBUNTU_RELEASE_CODE_NAME
+        MONITORED_RESOURCE_TYPE = var.MONITORED_RESOURCE_TYPE
+        MONITORED_RESOURCE_LOCATION = var.REGION
+        MONITORED_RESOURCE_NAMESPACE = var.MONITORED_RESOURCE_NAMESPACE
+        MONITORED_RESOURCE_NODE_ID = var.utility_hostname
       })
     file_name = "cloud_init_utility_vm.yaml"
   }
