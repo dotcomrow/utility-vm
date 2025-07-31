@@ -74,6 +74,8 @@ write_files:
       /usr/local/bin/disable-swap.sh
       /usr/local/bin/setup-docker.sh
       /usr/local/bin/setup-fluentbit.sh
+      systemctl enable setup-hosts-dns.service
+      systemctl start setup-hosts-dns.service
       /usr/local/bin/setup-utility.sh
 
       systemctl enable qemu-guest-agent
@@ -635,6 +637,118 @@ write_files:
       fi
       
       systemctl daemon-reload
+
+  - path: /usr/local/bin/setup-hosts-dns.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+
+      echo "Hostname=$(hostname)" >> /run/systemd/network/10-netplan-eth0.network || true
+      sudo systemctl restart systemd-networkd || true
+
+      HOSTNAME=$(hostname)
+      grep -q "127.0.1.1 $HOSTNAME" /etc/hosts || echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
+
+      # ---------------------------------------------
+      # 🧹 Disable systemd-resolved to free port 53
+      # ---------------------------------------------
+      echo "🧹 Disabling systemd-resolved..."
+      sudo systemctl stop systemd-resolved || true
+      sudo systemctl disable systemd-resolved || true
+      sudo rm -f /etc/resolv.conf
+      echo "nameserver 127.0.0.1" | sudo tee /etc/resolv.conf > /dev/null
+
+      # ---------------------------------------------
+      # ⚙️ Configure dnsmasq split-DNS
+      # ---------------------------------------------
+      sudo tee /etc/dnsmasq.d/k8s-split-dns.conf > /dev/null <<EOF
+      # Forward Kubernetes service lookups to CoreDNS
+      server=/svc.cluster.local/10.43.0.10
+
+      # Forward internal LAN lookups to LAN DNS
+      server=/internal.lan/10.0.0.10
+
+      # Forward everything else to LAN DNS
+      server=10.0.0.10
+
+      # Listen locally
+      listen-address=127.0.0.1
+
+      # Don't use /etc/resolv.conf
+      no-resolv
+      EOF
+
+      # Ensure dnsmasq global config allows localhost
+      sudo sed -i 's/^#\?listen-address=.*/listen-address=127.0.0.1/' /etc/dnsmasq.conf || echo 'listen-address=127.0.0.1' | sudo tee -a /etc/dnsmasq.conf
+
+      sudo systemctl enable dnsmasq
+      sudo systemctl restart dnsmasq
+
+      # Confirm DNS server
+      echo "✅ dnsmasq is resolving:"
+      echo "  - *.svc.cluster.local → 10.43.0.10"
+      echo "  - *.internal.lan      → 10.0.0.10"
+      echo "  - all others          → 10.0.0.10"
+
+      # ---------------------------------------------
+      # 🛡 IPv6 Hard Disable (Optional)
+      # ---------------------------------------------
+      sudo modprobe -r ip6_tables || true
+      sudo modprobe -r nf_defrag_ipv6 || true
+      sudo modprobe -r nf_conntrack_ipv6 || true
+      sudo modprobe -r ipv6 || true
+
+      echo "install ipv6 /bin/true" | sudo tee /etc/modprobe.d/force-disable-ipv6.conf
+      echo "install ip6_tables /bin/true" | sudo tee -a /etc/modprobe.d/force-disable-ipv6.conf
+
+      if [ -e /usr/sbin/ip6tables ]; then
+        sudo mv /usr/sbin/ip6tables /usr/sbin/ip6tables.disabled
+      fi
+
+      sudo tee /etc/modprobe.d/disable-ipv6.conf > /dev/null <<EOF
+      blacklist ipv6
+      blacklist nf_conntrack_ipv6
+      blacklist nf_defrag_ipv6
+      blacklist ip6_tables
+      EOF
+
+      sudo update-initramfs -u
+
+      # ---------------------------------------------
+      # 🔁 Force sysctl re-apply on boot
+      # ---------------------------------------------
+      sudo tee /etc/systemd/system/sysctl-ensure.service > /dev/null <<EOF
+      [Unit]
+      Description=Force re-apply sysctl settings
+      After=network.target
+      Wants=network.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/sbin/sysctl --system
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+      sudo systemctl daemon-reexec
+      sudo systemctl enable sysctl-ensure.service
+
+  - path: /etc/systemd/system/setup-hosts-dns.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Setup hosts and DNS configuration
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/setup-hosts-dns.sh
+      RemainAfterExit=true
+
+      [Install]
+      WantedBy=multi-user.target
 
   - path: /etc/sysctl.d/99-disable-ipv6.conf
     permissions: '0644'
