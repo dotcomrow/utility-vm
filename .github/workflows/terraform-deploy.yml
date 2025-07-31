@@ -1,0 +1,259 @@
+name: TFC Rebuild Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Operation mode'
+        required: true
+        default: 'rebuild-vms'
+        type: choice
+        options:
+          - apply-all
+          - apply-vms
+          - rebuild-all
+          - rebuild-vms
+          - apply-patch
+          - state-cleanup
+          - state-remove
+      target_resource:
+        description: 'Terraform resource to cleanup or remove from state (e.g., google_eventarc_trigger.secret_manager_trigger)'
+        required: false
+
+permissions: write-all
+
+jobs:
+  tfc:
+    name: "Terraform: ${{ github.event.inputs.mode }}"
+    runs-on: self-hosted
+    env:
+      TF_CLOUD_ORGANIZATION: ${{ github.repository_owner }}
+      TF_API_TOKEN: ${{ secrets.TFE_TOKEN }}
+      MODE: ${{ github.event.inputs.mode }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Upload Terraform Configuration
+        uses: hashicorp/tfc-workflows-github/actions/upload-configuration@v1.1.1
+        id: upload
+        with:
+          workspace: ${{ github.event.repository.name }}
+          directory: terraform
+
+      - name: Auto-install correct Terraform version for workspace
+        if: ${{ github.event.inputs.mode == 'state-remove' }}
+        env:
+          TFE_TOKEN: ${{ secrets.TFE_TOKEN }}
+        run: |
+          set -e
+          echo "🔍 Fetching Terraform version from Terraform Cloud workspace..."
+
+          ORG="${{ github.repository_owner }}"
+          WORKSPACE="${{ github.event.repository.name }}"
+
+          VERSION=$(curl -s \
+            --header "Authorization: Bearer $TFE_TOKEN" \
+            --header "Content-Type: application/vnd.api+json" \
+            https://app.terraform.io/api/v2/organizations/$ORG/workspaces/$WORKSPACE \
+            | jq -r '.data.attributes."terraform-version"')
+
+          if [[ -z "$VERSION" || "$VERSION" == "null" ]]; then
+            echo "❌ Could not detect Terraform version for workspace."
+            exit 1
+          fi
+
+          echo "⬇️ Downloading Terraform v$VERSION..."
+          rm -rf terraform terraform.zip
+          curl -fsSL "https://releases.hashicorp.com/terraform/${VERSION}/terraform_${VERSION}_linux_amd64.zip" -o terraform.zip
+          unzip -o -q terraform.zip
+          chmod +x terraform
+          ./terraform -version
+          echo "✅ Terraform v$VERSION installed successfully."
+
+      - name: Force remove broken resource from state
+        if: ${{ github.event.inputs.mode == 'state-remove' }}
+        env:
+          TF_TOKEN_app_terraform_io: ${{ secrets.TFE_TOKEN }}
+        run: |
+          set -e
+
+          TARGET_RESOURCE="${{ github.event.inputs.target_resource }}"
+          if [[ -z "$TARGET_RESOURCE" ]]; then
+            echo "❌ You must specify target_resource input for state-remove mode."
+            exit 1
+          fi
+
+          echo "📁 Setting up temporary backend config to connect to TFC..."
+          mkdir -p tfc-state-cleanup
+          cat > tfc-state-cleanup/backend.tf <<EOF
+          terraform {
+            backend "remote" {
+              organization = "${{ github.repository_owner }}"
+
+              workspaces {
+                name = "${{ github.event.repository.name }}"
+              }
+            }
+          }
+          EOF
+
+          cd tfc-state-cleanup
+
+          echo "🔐 Initializing remote backend..."
+          ../terraform init -input=false
+
+          echo "🗑️ Removing $TARGET_RESOURCE from Terraform Cloud state..."
+          ../terraform state rm "$TARGET_RESOURCE"
+
+          echo "✅ Done. Resource removed from state successfully."
+
+      - name: Trigger Terraform State Cleanup for Broken Resource
+        if: ${{ github.event.inputs.mode == 'state-cleanup' }}
+        run: |
+          WORKSPACE_NAME="${{ github.event.repository.name }}"
+          ORG_NAME="${{ github.repository_owner }}"
+          TOKEN="${{ secrets.TFE_TOKEN }}"
+          TARGET_RESOURCE="${{ github.event.inputs.target_resource }}"
+
+          if [[ -z "$TARGET_RESOURCE" ]]; then
+            echo "❌ Error: target_resource input is required for state-cleanup mode."
+            exit 1
+          fi
+
+          echo "🔍 Looking up workspace ID for $WORKSPACE_NAME..."
+          WORKSPACE_ID=$(curl -s \
+            --header "Authorization: Bearer $TOKEN" \
+            --header "Content-Type: application/vnd.api+json" \
+            https://app.terraform.io/api/v2/organizations/$ORG_NAME/workspaces/$WORKSPACE_NAME | jq -r '.data.id')
+
+          echo "🧹 Generating destroy plan targeting $TARGET_RESOURCE"
+          DATA=$(jq -n \
+            --arg wid "$WORKSPACE_ID" \
+            --arg target "$TARGET_RESOURCE" \
+            '{
+              data: {
+                attributes: {
+                  "is-destroy": true,
+                  "message": "State cleanup run from GitHub Actions",
+                  "target-addrs": [$target]
+                },
+                type: "runs",
+                relationships: {
+                  workspace: {
+                    data: {
+                      type: "workspaces",
+                      id: $wid
+                    }
+                  }
+                }
+              }
+            }')
+
+          echo "🚀 Sending destroy run to Terraform Cloud..."
+          curl -s -X POST \
+            --header "Authorization: Bearer $TOKEN" \
+            --header "Content-Type: application/vnd.api+json" \
+            --data "$DATA" \
+            https://app.terraform.io/api/v2/runs | jq
+
+          echo "⏳ Waiting 90 seconds for destroy to propagate..."
+          sleep 90
+
+
+      - name: Force stop Proxmox VMs for rebuild
+        if: ${{ github.event.inputs.mode == 'rebuild-vms' }}
+        run: |
+          echo "⚡ Force stopping Proxmox VMs for rebuild"
+
+          sudo --preserve-env=PATH bash -c '
+            export PATH=$PATH:/usr/sbin:/sbin:/usr/bin:/bin
+
+            for vm in utility-node do
+              echo "🔌 Stopping $vm"
+              vmid=$(qm list | awk -v name="$vm" '\''$0 ~ name {print $1}'\'')
+              if [[ -n "$vmid" ]]; then
+                echo "VM ID for $vm: $vmid"
+                qm stop "$vmid" || true
+              else
+                echo "⚠️  VM $vm not found — skipping"
+              fi
+            done
+
+            echo "🧼 Cleaning up cloud-init snippets..."
+            rm -f /var/lib/vz/snippets/cloud_init_*.yaml || true
+          '
+
+      - name: Trigger Terraform Destroy
+        if: contains(fromJson('["rebuild-all", "rebuild-vms"]'), env.MODE)
+        run: |
+          WORKSPACE_NAME="${{ github.event.repository.name }}"
+          ORG_NAME="${{ github.repository_owner }}"
+          TOKEN="${{ secrets.TFE_TOKEN }}"
+
+          WORKSPACE_ID=$(curl -s \
+            --header "Authorization: Bearer $TOKEN" \
+            --header "Content-Type: application/vnd.api+json" \
+            https://app.terraform.io/api/v2/organizations/$ORG_NAME/workspaces/$WORKSPACE_NAME | jq -r '.data.id')
+
+          if [[ "$MODE" == "rebuild-vms" ]]; then
+            TARGET_JSON='[
+              "proxmox_virtual_environment_vm.utility_vm",
+              "proxmox_virtual_environment_file.utility_cloud_init_config"
+            ]'
+          else
+            TARGET_JSON='null'
+          fi
+
+          DATA=$(jq -n \
+            --arg wid "$WORKSPACE_ID" \
+            --arg targets "$TARGET_JSON" \
+            '{
+              data: {
+                attributes: {
+                  "is-destroy": true,
+                  "message": "Destroy triggered from GitHub Actions",
+                  "target-addrs": ($targets | fromjson)
+                },
+                type: "runs",
+                relationships: {
+                  workspace: {
+                    data: {
+                      type: "workspaces",
+                      id: $wid
+                    }
+                  }
+                }
+              }
+            }')
+
+          echo "Triggering destroy for mode: $MODE"
+          echo "$DATA"
+
+          curl -s -X POST \
+            --header "Authorization: Bearer $TOKEN" \
+            --header "Content-Type: application/vnd.api+json" \
+            --data "$DATA" \
+            https://app.terraform.io/api/v2/runs | jq
+
+      - name: Wait for destroy to complete
+        if: contains(fromJson('["rebuild-all", "rebuild-vms"]'), env.MODE)
+        run: |
+          echo "🕐 Waiting 180 seconds to allow destroy to complete..."
+          sleep 180
+
+      - name: Trigger Lightweight Terraform Apply (patch/fix only)
+        if: ${{ github.event.inputs.mode == 'apply-patch' }}
+        uses: hashicorp/tfc-workflows-github/actions/create-run@v1.1.1
+        with:
+          workspace: ${{ github.event.repository.name }}
+          configuration_version: ${{ steps.upload.outputs.configuration_version_id }}
+          plan_only: false
+
+      - name: Trigger Terraform Apply
+        uses: hashicorp/tfc-workflows-github/actions/create-run@v1.1.1
+        with:
+          workspace: ${{ github.event.repository.name }}
+          configuration_version: ${{ steps.upload.outputs.configuration_version_id }}
+          plan_only: false

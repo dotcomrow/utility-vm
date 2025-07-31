@@ -1,0 +1,551 @@
+#cloud-config
+hostname: ${hostname}
+
+users:
+  - name: ubuntu
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    groups: users, admin
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - ${ssh_keys}
+
+ssh_pwauth: false
+
+package_update: true
+package_upgrade: true
+packages:
+  - qemu-guest-agent
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg-agent
+  - software-properties-common
+  - zsh
+  - nfs-common
+  - gnupg
+  - lsb-release
+  - nftables
+  - linux-firmware
+  - alsa-utils
+  - ubuntu-drivers-common
+  - dnsmasq
+  - ethtool
+
+growpart:
+  mode: auto
+  devices: ["/"]
+
+write_files:
+  - path: /etc/systemd/system/initial-setup.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Post-bootstrap setup for Kubernetes node
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      EnvironmentFile=-/etc/environment
+      ExecStart=/usr/local/bin/initial-setup.sh
+      RemainAfterExit=true
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /usr/local/bin/initial-setup.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # export HTTP_PROXY=http://10.0.0.10:3128
+      # export HTTPS_PROXY=http://10.0.0.10:3128
+      # export NO_PROXY=127.0.0.1,localhost,10.0.0.0/24,10.96.0.0/12
+
+      CPU_FLAGS="nohz_full=0-59 isolcpus=0-59 rcu_nocbs=0-59"
+      sed -i "s|^GRUB_CMDLINE_LINUX=.*|GRUB_CMDLINE_LINUX=\"$CPU_FLAGS\"|" /etc/default/grub
+      update-grub
+      grub-mkconfig -o /boot/grub/grub.cfg || true
+
+      # update-ca-certificates
+      systemctl daemon-reload
+      /usr/local/bin/performance-tuning.sh
+      sysctl --system
+      update-grub
+      /usr/local/bin/disable-swap.sh
+      /usr/local/bin/setup-docker.sh
+      /usr/local/bin/setup-fluentbit.sh
+
+      systemctl enable qemu-guest-agent
+      systemctl start qemu-guest-agent
+      systemctl daemon-reload
+
+  - path: /usr/local/bin/performance-tuning.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      echo "🔧 Applying performance tuning..."
+      
+      # CPU Governor
+      GOVERNOR_PATH="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+      if [ -f "$GOVERNOR_PATH" ]; then
+        for CPU in /sys/devices/system/cpu/cpu[0-9]*; do
+          echo performance > "$CPU/cpufreq/scaling_governor" 2>/dev/null || true
+        done
+        echo "✅ CPU governors set to performance"
+      else
+        echo "⚠️ CPU frequency scaling not available — skipping governor tuning"
+      fi
+      
+      # Scheduler tuning for SSDs
+      for dev in /sys/block/sd*/queue/scheduler; do
+        echo mq-deadline > "$dev"
+      done
+
+      systemctl disable apt-daily.timer
+      systemctl disable snapd
+      systemctl disable motd-news.timer
+      
+      # Sysctl parameters
+      cat <<EOF > /etc/sysctl.d/99-performance-tuning.conf
+      fs.inotify.max_user_watches=524288
+      vm.max_map_count=262144
+      net.core.rmem_max=134217728
+      net.core.wmem_max=134217728
+      net.ipv4.tcp_rmem=4096 87380 134217728
+      net.ipv4.tcp_wmem=4096 65536 134217728
+      net.ipv4.tcp_congestion_control=bbr
+      vm.swappiness=10
+      vm.dirty_ratio=15
+      vm.dirty_background_ratio=5
+      EOF
+      
+      sysctl --system
+
+      # 2) Pick all “large-MTU” interfaces automatically
+      #    (adjust the grep if your jumbo-MTU devices have a different naming scheme)
+      for IF in $(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|vtnet)'); do
+        # bring MTU up before offloads
+        ip link set dev $IF mtu 9000
+
+        # enable big-packet offloads
+        ethtool -K $IF gro on gso on tso on rx on tx on
+
+        # increase the kernel TX queue length
+        ip link set dev $IF txqueuelen 10000
+      done
+
+      # 3) Sysctls — bump backlog and buffers for all interfaces
+      #    and enable TCP MTU probing (helps path-MTU discovery)
+      sysctl -w net.core.netdev_max_backlog=250000
+      sysctl -w net.core.rmem_max=134217728
+      sysctl -w net.core.wmem_max=134217728
+      sysctl -w net.ipv4.tcp_rmem="4096 87380 134217728"
+      sysctl -w net.ipv4.tcp_wmem="4096 87380 134217728"
+      sysctl -w net.ipv4.tcp_mtu_probing=1
+
+      # 4) Persist sysctls
+      cat <<EOF >/etc/sysctl.d/99-network-opt.conf
+      net.core.netdev_max_backlog=250000
+      net.core.rmem_max=134217728
+      net.core.wmem_max=134217728
+      net.ipv4.tcp_rmem=4096 87380 134217728
+      net.ipv4.tcp_wmem=4096 87380 134217728
+      net.ipv4.tcp_mtu_probing=1
+      EOF
+
+      # 5) Persist ethtool + txqueuelen via a systemd service
+      cat <<'EOF' >/etc/systemd/system/network-tweaks.service
+      [Unit]
+      Description=Apply ethtool offloads + txqueuelen
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/network-tweaks.sh
+
+      [Install]
+      WantedBy=multi-user.target
+      EOF
+
+      # Install the same script to /usr/local/bin and make it executable
+            cat <<'EOF' >/usr/local/bin/network-tweaks.sh
+      #!/bin/bash
+      set -e
+      for IF in $(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(eth|vtnet)'); do
+        CURRENT_MTU=$(ip -o link show "$IF" | awk '{print $4}')
+        if [ "$CURRENT_MTU" != "9000" ]; then
+          ip link set dev "$IF" mtu 9000
+        fi
+        ethtool -K $IF gro on gso on tso on rx on tx on
+        ip link set dev $IF txqueuelen 10000
+      done
+      EOF
+
+      chmod +x /usr/local/bin/network-tweaks.sh
+
+      systemctl daemon-reload
+      systemctl enable network-tweaks
+
+      echo "✅ Network tweaks applied and will persist across reboots."
+      
+      # Limit nofile
+      cat <<EOF > /etc/security/limits.d/99-nofile.conf
+      * soft nofile 1048576
+      * hard nofile 1048576
+      EOF
+      
+      # Systemd service overrides
+      mkdir -p /etc/systemd/system/containerd.service.d
+      mkdir -p /etc/systemd/system/rke2-server.service.d
+      mkdir -p /etc/systemd/system/rke2-agent.service.d
+      
+      cat <<EOF > /etc/systemd/system/containerd.service.d/override.conf
+      [Service]
+      LimitNOFILE=1048576
+      LimitNPROC=65536
+      TasksMax=infinity
+      EOF
+      
+      cat <<EOF > /etc/systemd/system/rke2-server.service.d/override.conf
+      [Service]
+      LimitNOFILE=1048576
+      LimitNPROC=65536
+      TasksMax=infinity
+      EOF
+      
+      cat <<EOF > /etc/systemd/system/rke2-agent.service.d/override.conf
+      [Service]
+      LimitNOFILE=1048576
+      LimitNPROC=65536
+      TasksMax=infinity
+      EOF
+
+      # cat <<EOF | sudo tee /etc/profile.d/http_proxy.sh
+      # export HTTP_PROXY="http://10.0.0.10:3128"
+      # export HTTPS_PROXY="http://10.0.0.10:3128"
+      # export NO_PROXY="127.0.0.1,localhost,10.0.0.0/24,10.96.0.0/12,192.168.0.0/16"
+      # EOF
+
+      # sudo chmod +x /etc/profile.d/http_proxy.sh
+
+      # Unbind kernel workqueues from specific CPUs (recommended on NUMA/multicore systems)
+      if [ -e /sys/module/workqueue/parameters/disable_bound ]; then
+        echo y > /sys/module/workqueue/parameters/disable_bound
+        echo "✅ Enabled unbound kernel workqueues for better scalability"
+      fi
+
+      # 6) Add GRUB performance kernel parameters
+      echo "✅ Adding performance kernel parameters to GRUB..."
+      GRUB_CONFIG_FILE="/etc/default/grub"
+
+      # Append only if not already present
+      if ! grep -q "workqueue.disable_bound=1" "$GRUB_CONFIG_FILE"; then
+        sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="workqueue.disable_bound=1 intel_pstate=disable processor.max_cstate=1 idle=poll transparent_hugepage=never mitigations=off /' "$GRUB_CONFIG_FILE"
+        update-grub
+        echo "✅ GRUB updated. Kernel parameters will apply on next boot."
+      else
+        echo "⚠️ GRUB already configured. Skipping update."
+      fi
+      
+      systemctl daemon-reload
+
+  - path: /etc/sysctl.d/99-disable-ipv6.conf
+    permissions: '0644'
+    content: |
+      net.ipv6.conf.all.disable_ipv6 = 1
+      net.ipv6.conf.default.disable_ipv6 = 1
+      net.ipv6.conf.lo.disable_ipv6 = 1
+
+  - path: /etc/default/grub.d/99-disable-ipv6.cfg
+    permissions: '0644'
+    content: |
+      GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX ipv6.disable=1"
+
+  - path: /usr/local/bin/disable-swap.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      swapoff -a
+      cp /etc/fstab /etc/fstab.bak
+      sed -i '/^[^#].*\bswap\b/s/^/#/' /etc/fstab
+      echo fs.inotify.max_user_watches=524288 | sudo tee /etc/sysctl.d/99-inotify.conf
+
+  - path: /usr/local/bin/setup-docker.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      until curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -; do sleep 5; done
+      sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+      sudo apt-get update -y
+      DEBIAN_FRONTEND=noninteractive sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+
+      # sudo mkdir -p /etc/systemd/system/docker.service.d
+      # cat <<EOF | sudo tee /etc/systemd/system/docker.service.d/10-http-proxy.conf
+      # [Service]
+      # Environment="HTTP_PROXY=http://10.0.0.10:3128" "HTTPS_PROXY=http://10.0.0.10:3128" "NO_PROXY=127.0.0.1,localhost,10.0.0.0/24,10.96.0.0/12"
+      # EOF
+
+      # sudo mkdir -p /etc/systemd/system/containerd.service.d
+      # cat <<EOF | sudo tee /etc/systemd/system/containerd.service.d/10-http-proxy.conf
+      # [Service]
+      # Environment="HTTP_PROXY=http://10.0.0.10:3128" "HTTPS_PROXY=http://10.0.0.10:3128" "NO_PROXY=127.0.0.1,localhost,10.0.0.0/24,10.96.0.0/12"
+      # EOF
+
+  - path: /etc/security/limits.d/99-nofile.conf
+    permissions: '0644'
+    content: |
+      * soft nofile 1048576
+      * hard nofile 1048576
+
+  - path: /etc/systemd/system/containerd.service.d/override.conf
+    permissions: '0644'
+    content: |
+      [Service]
+      LimitNOFILE=1048576
+      LimitNPROC=65536
+      TasksMax=infinity
+
+  - path: /etc/systemd/system/rke2-server.service.d/override.conf
+    permissions: '0644'
+    content: |
+      [Service]
+      LimitNOFILE=1048576
+      LimitNPROC=65536
+      TasksMax=infinity
+
+  - path: /etc/systemd/system/rke2-agent.service.d/override.conf
+    permissions: '0644'
+    content: |
+      [Service]
+      LimitNOFILE=1048576
+      LimitNPROC=65536
+      TasksMax=infinity
+
+  - path: /usr/local/bin/setup-fluentbit.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      echo "📦 Configuring Fluent Bit for GCP logging..."
+
+      mkdir -p /etc/google-cloud-ops-agent
+      echo "${GCP_LOGGING_KEY}" | base64 -d > /etc/google-cloud-ops-agent/logging-key.json
+
+      mkdir -p /usr/share/keyrings
+      KEYRING_PATH="/usr/share/keyrings/fluent-bit-archive-keyring.gpg"
+
+      # Clean up any broken or partial key
+      rm -f "$KEYRING_PATH"
+
+      until curl -fsSL https://packages.fluentbit.io/fluentbit.key | gpg --dearmor --no-tty --batch -o "$KEYRING_PATH"; do
+        echo "Waiting for DNS resolution or valid key for fluentbit.key..."
+        sleep 5
+        rm -f "$KEYRING_PATH"  # ensure no corrupted key is left behind
+      done
+
+      DISTRO=$(lsb_release -cs)
+      if [ "$DISTRO" = "${UBUNTU_RELEASE_CODE_NAME}" ]; then
+        echo "Detected codename $DISTRO unsupported, falling back to jammy"
+        DISTRO="jammy"
+      fi
+
+      echo "deb [signed-by=/usr/share/keyrings/fluent-bit-archive-keyring.gpg] https://packages.fluentbit.io/ubuntu/$DISTRO $DISTRO main" > /etc/apt/sources.list.d/fluent-bit.list
+      sudo apt-get update
+      sudo apt-get install -y td-agent-bit
+
+      mkdir -p /etc/td-agent-bit/conf.d
+
+      cat <<EOF > /etc/td-agent-bit/td-agent-bit.conf
+      [SERVICE]
+          flush         1
+          daemon        Off
+          log_level     info
+          plugins_file  plugins.conf
+          parsers_file  parsers.conf
+          http_server   Off
+          http_listen   0.0.0.0
+          http_port     2020
+          storage.metrics on
+
+      @INCLUDE /etc/td-agent-bit/conf.d/*.conf
+      EOF
+
+      # cloud-init logs
+      cat <<EOF > /etc/td-agent-bit/conf.d/cloudinit.conf
+      [INPUT]
+          Name               tail
+          Mem_Buf_Limit     10MB
+          Path               /var/log/cloud-init*.log
+          Tag                cloudinit
+          Read_from_Head     Off
+          DB                 /var/log/flb_cloudinit.db
+          DB.Sync            normal
+          Skip_Long_Lines    On
+
+      [FILTER]
+          Name      parser
+          Match     cloudinit
+          Key_Name  log
+          Parser    cloudinit_parser
+          Reserve_Data true
+          Preserve_Key true
+
+      [FILTER]
+          Name modify
+          Match cloudinit
+          Add logName cloudinit
+
+      [FILTER]
+          Name    nest
+          Match   cloudinit
+          Operation nest
+          Wildcard process
+          Wildcard pid
+          Wildcard timestamp
+          Nested_under logging.googleapis.com/labels
+
+      [OUTPUT]
+          Name  stackdriver
+          Match cloudinit
+          google_service_credentials /etc/google-cloud-ops-agent/logging-key.json
+          resource ${MONITORED_RESOURCE_TYPE}
+          location ${MONITORED_RESOURCE_LOCATION}
+          namespace ${MONITORED_RESOURCE_NAMESPACE}
+          node_id ${MONITORED_RESOURCE_NODE_ID}
+          log_name_key cloudinit
+      EOF
+
+      # journal logs (systemd, rke2, etc.)
+      cat <<EOF > /etc/td-agent-bit/conf.d/journald.conf
+      [INPUT]
+          Name    systemd
+          Tag     journal.*
+          Mem_Buf_Limit     10MB
+          DB      /var/log/flb_journal.db
+          Systemd_Filter  _SYSTEMD_UNIT=bootstrap-rke2.service
+          Systemd_Filter  _SYSTEMD_UNIT=rke2-server.service
+          Systemd_Filter  _SYSTEMD_UNIT=cloud-final.service
+          Read_From_Tail  On
+
+      [FILTER]
+          Name      parser
+          Match     journal.*
+          Key_Name  MESSAGE
+          Parser    journald_parser
+          Reserve_Data true
+          Preserve_Key true
+
+      [FILTER]
+          Name modify
+          Match journal.*
+          Add logName systemd-journal
+
+      [FILTER]
+          Name   modify
+          Match  journal.*
+          Rename message textPayload
+
+      [FILTER]
+          Name    nest
+          Match   journal.*
+          Operation nest
+          Wildcard identifier
+          Wildcard pid
+          Wildcard hostname
+          Nested_under logging.googleapis.com/labels
+
+      [OUTPUT]
+          Name  stackdriver
+          Match journal.*
+          google_service_credentials /etc/google-cloud-ops-agent/logging-key.json
+          resource ${MONITORED_RESOURCE_TYPE}
+          location ${MONITORED_RESOURCE_LOCATION}
+          namespace ${MONITORED_RESOURCE_NAMESPACE}
+          node_id ${MONITORED_RESOURCE_NODE_ID}
+          log_name_key systemd-journal
+      EOF
+
+      # Optional: catch all syslog (if rsyslog is enabled)
+      cat <<EOF > /etc/td-agent-bit/conf.d/syslog.conf
+      [INPUT]
+          Name              tail
+          Mem_Buf_Limit     10MB
+          Path              /var/log/syslog
+          Tag               syslog
+          Read_from_Head    Off
+          DB                /var/log/flb_syslog.db
+          Skip_Long_Lines   On
+
+      [FILTER]
+          Name   parser
+          Match  syslog
+          Key_Name log
+          Parser syslog_parser
+          Reserve_Data true
+          Preserve_Key true
+
+      [FILTER]
+          Name   modify
+          Match  syslog
+          Rename message textPayload
+
+      [FILTER]
+          Name modify
+          Match syslog
+          Add logName syslog
+
+      [FILTER]
+          Name    nest
+          Match   syslog
+          Operation nest
+          Wildcard hostname
+          Wildcard identifier
+          Wildcard pid
+          Nested_under logging.googleapis.com/labels
+
+      [OUTPUT]
+          Name  stackdriver
+          Match syslog
+          google_service_credentials /etc/google-cloud-ops-agent/logging-key.json
+          resource ${MONITORED_RESOURCE_TYPE}
+          location ${MONITORED_RESOURCE_LOCATION}
+          namespace ${MONITORED_RESOURCE_NAMESPACE}
+          node_id ${MONITORED_RESOURCE_NODE_ID}
+          log_name_key syslog
+      EOF
+
+      # cloudinit_parser
+      cat <<EOF >> /etc/td-agent-bit/parsers.conf
+
+      [PARSER]
+          Name        cloudinit_parser
+          Format      regex
+          Regex       ^(?<timestamp>[^ ]+\s[^ ]+) (?<process>[^\[]+)\[(?<pid>\d+)\]:(?<message>.*)
+          Time_Key    timestamp
+          Time_Format %Y-%m-%d %H:%M:%S
+
+      [PARSER]
+          Name        syslog_parser
+          Format      regex
+          Regex       ^(?<timestamp>\w{3} +\d{1,2} \d{2}:\d{2}:\d{2}) (?<hostname>[^\s]+) (?<identifier>[^:]+): (?<message>.*)
+          Time_Key    timestamp
+          Time_Format %b %d %H:%M:%S
+
+      [PARSER]
+          Name        journald_parser
+          Format      regex
+          Regex       ^(?<timestamp>\d{4}-\d{2}-\d{2}T[0-9:.+\-Z]+) (?<hostname>[^\s]+) (?<identifier>[^\[]+)\[(?<pid>\d+)\]: (?<message>.*)
+          Time_Key    timestamp
+          Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+      EOF
+
+      systemctl daemon-reload
+      systemctl enable td-agent-bit
+      systemctl restart td-agent-bit
+
+runcmd:
+  - systemctl daemon-reexec
+  - systemctl daemon-reload
+  - systemctl enable initial-setup.service
+  - systemctl start initial-setup.service
