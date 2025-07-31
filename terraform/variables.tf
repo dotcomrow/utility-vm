@@ -34,8 +34,8 @@ variable "node_name" {
   default = "pve"
 }
 
-variable "harbor_hostname" {
-  default = "harbor-node"
+variable "utility_hostname" {
+  default = "utility-node"
 }
 
 
