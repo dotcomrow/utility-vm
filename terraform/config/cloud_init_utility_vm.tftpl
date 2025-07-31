@@ -666,9 +666,7 @@ write_files:
     content: |
       #!/bin/bash
 
-      echo "Hostname=$(hostname)" >> /run/systemd/network/10-netplan-eth0.network || true
-      sudo systemctl restart systemd-networkd || true
-
+      # Add hostname to /etc/hosts without modifying network config
       HOSTNAME=$(hostname)
       grep -q "127.0.1.1 $HOSTNAME" /etc/hosts || echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
 
