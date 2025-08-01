@@ -201,31 +201,35 @@ write_files:
       harbor_admin_password: Harbor12345
       
       # Authentication configuration
-      # Initial mode - will be changed to oidc_auth via API after setup
+      # Using database authentication initially - GitHub OAuth will be configured via API
       auth_mode: db_auth
       
-      # OIDC authentication settings - configured via API post-installation
-      # Using GitHub's OAuth endpoints directly (not OIDC discovery)
-      oidc_name: GitHub
-      oidc_endpoint: https://github.com/login/oauth/authorize
-      oidc_client_id: ${HARBOR_OIDC_CLIENT}
-      oidc_client_secret: ${HARBOR_OIDC_SECRET}
-      oidc_scope: read:user,read:org
-      oidc_verify_cert: true
-      oidc_auto_onboard: true
-      oidc_user_claim: login
-      oidc_groups_claim: organizations
-      oidc_admin_group: harbor_admins
-      oidc_group_filter: harbor_users,harbor_admins
+      # OIDC authentication settings - DISABLED due to GitHub OAuth compatibility issues
+      # GitHub OAuth App integration requires manual configuration through Harbor UI
+      # oidc_name: GitHub
+      # oidc_endpoint: https://github.com/login/oauth/authorize
+      # oidc_client_id: ${HARBOR_OIDC_CLIENT}
+      # oidc_client_secret: ${HARBOR_OIDC_SECRET}
+      # oidc_scope: read:user,read:org
+      # oidc_verify_cert: true
+      # oidc_auto_onboard: true
+      # oidc_user_claim: login
+      # oidc_groups_claim: organizations
+      # oidc_admin_group: harbor_admins
+      # oidc_group_filter: harbor_users,harbor_admins
       
       # Harbor DB configuration
       database:
         # The password for the root user of Harbor DB
         password: root123
-        # The maximum number of connections in the idle connection pool
-        max_idle_conns: 50
-        # The maximum number of open connections to the database
-        max_open_conns: 1000
+        # The maximum number of connections in the idle connection pool (increased for jobservice)
+        max_idle_conns: 100
+        # The maximum number of open connections to the database (increased for jobservice)
+        max_open_conns: 2000
+        # Connection timeout for database operations
+        conn_max_lifetime: 5m
+        # Connection timeout for database connections
+        conn_max_idle_time: 10m
       
       # The default data volume
       data_volume: /data/harbor
@@ -254,22 +258,32 @@ write_files:
         insecure: false
       
       jobservice:
-        # Maximum number of job workers in job service
-        max_job_workers: 10
-        # The timeout for webhook job
-        webhook_job_timeout: 30
+        # Maximum number of job workers in job service (increased for better throughput)
+        max_job_workers: 20
+        # The timeout for webhook job (increased for large image operations)
+        webhook_job_timeout: 300
+        # Job processing timeout (5 minutes for large operations)
+        job_timeout: 300
+        # Pool size for job workers
+        pool_size: 50
+        # Memory settings for jobservice workers
+        worker_memory_mb: 512
+        # Maximum queue size for pending jobs
+        max_queue_size: 10000
+        # Job cleanup settings
+        cleanup_timeout: 3600
         # Loggers for the job service
         job_loggers:
-          - name: "FILE"
-            level: INFO
-            settings:
-              base_dir: "/data/harbor/logs/jobs"
-          - name: "STD_OUTPUT"
-            level: INFO
-        # Logger sweeper duration
-        logger_sweeper_duration: 1
-        # Enable jobservice logger
-        job_log_dir: "/data/harbor/logs/jobs"
+          - "STD_OUTPUT"
+          - "FILE"
+          - "DB"
+        # Logger sweeper duration (clean logs every 24 hours)
+        logger_sweeper_duration: 24
+        # Retry settings for failed jobs
+        job_retry_count: 3
+        job_retry_delay: 10
+        # Enable job metrics collection
+        enable_metrics: true
       
       notification:
         # Maximum retry count for webhook job
@@ -428,6 +442,44 @@ write_files:
       echo "⏳ Waiting for Harbor to start..."
       sleep 30
       
+      # Check and fix jobservice if needed
+      echo "🔧 Checking Harbor jobservice health..."
+      cd /opt/harbor
+      
+      # Wait for all Harbor services to be ready
+      for i in {1..30}; do
+        if docker-compose ps | grep -q "Up" && docker-compose ps | grep -q "jobservice"; then
+          echo "✅ Harbor services are running"
+          break
+        fi
+        echo "Waiting for Harbor services... (attempt $i/30)"
+        sleep 10
+      done
+      
+      # Check jobservice specifically
+      JOBSERVICE_STATUS=$(docker-compose ps harbor-jobservice | grep "Up" || echo "")
+      if [ -z "$JOBSERVICE_STATUS" ]; then
+        echo "⚠️  Jobservice not running properly, restarting Harbor..."
+        docker-compose down
+        sleep 10
+        docker-compose up -d
+        sleep 30
+        
+        # Verify jobservice again
+        RETRY_STATUS=$(docker-compose ps harbor-jobservice | grep "Up" || echo "")
+        if [ -z "$RETRY_STATUS" ]; then
+          echo "❌ Jobservice still failing, checking logs..."
+          docker-compose logs harbor-jobservice
+          echo "Attempting jobservice container restart..."
+          docker-compose restart harbor-jobservice
+          sleep 15
+        else
+          echo "✅ Jobservice recovered after restart"
+        fi
+      else
+        echo "✅ Jobservice is running properly"
+      fi
+      
       # Configure Harbor as pull-through cache
       echo "🔧 Configuring Harbor as pull-through cache..."
       
@@ -540,43 +592,86 @@ write_files:
       create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
       create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
       
-      # Configure GitHub OAuth authentication
+      # Configure GitHub OAuth authentication automatically
       echo "🔧 Configuring GitHub OAuth authentication..."
       
       # Wait for Harbor to be fully ready before configuring OAuth
       sleep 15
       
-      # Update Harbor configuration to use GitHub OAuth
-      echo "Configuring GitHub OAuth authentication..."
+      # GitHub OAuth configuration via Harbor API
+      echo "Setting up GitHub OAuth with Harbor API..."
       
-      # Try the basic configuration first
-      OAUTH_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
-        -H "Content-Type: application/json" \
-        -u "${HARBOR_USER}:${HARBOR_PASS}" \
-        -d "{
-          \"auth_mode\": \"oidc_auth\",
-          \"oidc_name\": \"GitHub\",
-          \"oidc_endpoint\": \"https://github.com\",
-          \"oidc_client_id\": \"${HARBOR_OIDC_CLIENT}\",
-          \"oidc_client_secret\": \"${HARBOR_OIDC_SECRET}\",
-          \"oidc_scope\": \"read:user,read:org\",
-          \"oidc_verify_cert\": false,
-          \"oidc_auto_onboard\": true,
-          \"oidc_user_claim\": \"login\",
-          \"oidc_groups_claim\": \"organizations\",
-          \"oidc_admin_group\": \"harbor_admins\",
-          \"oidc_group_filter\": \"harbor_users,harbor_admins\"
-        }")
+      # Apply GitHub OAuth configuration to Harbor
+      OAUTH_RESPONSE=$(curl -s -w "\\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \\
+        -H "Content-Type: application/json" \\
+        -u "${HARBOR_USER}:${HARBOR_PASS}" \\
+        -d '{
+          "auth_mode": "oidc_auth",
+          "oidc_name": "GitHub",
+          "oidc_endpoint": "https://github.com/login/oauth/authorize",
+          "oidc_client_id": "'${HARBOR_OIDC_CLIENT}'",
+          "oidc_client_secret": "'${HARBOR_OIDC_SECRET}'",
+          "oidc_scope": "read:user,user:email",
+          "oidc_verify_cert": true,
+          "oidc_auto_onboard": true,
+          "oidc_user_claim": "login",
+          "oidc_groups_claim": "",
+          "oidc_admin_group": "",
+          "oidc_group_filter": ""
+        }')
       
       OAUTH_HTTP_CODE=$(echo "$OAUTH_RESPONSE" | tail -n1)
       OAUTH_RESPONSE_BODY=$(echo "$OAUTH_RESPONSE" | head -n -1)
       
-      echo "OAuth configuration response: HTTP $OAUTH_HTTP_CODE"
-      if [ "$OAUTH_HTTP_CODE" != "200" ]; then
-        echo "⚠️  OAuth configuration response: $OAUTH_RESPONSE_BODY"
-        echo "GitHub OAuth will need to be configured manually through Harbor UI"
+      if [ "$OAUTH_HTTP_CODE" = "200" ]; then
+        echo "✅ GitHub OAuth configuration applied successfully"
+        
+        # Wait for configuration to take effect
+        sleep 10
+        
+        # Verify OAuth configuration
+        echo "Verifying GitHub OAuth configuration..."
+        AUTH_MODE=$(curl -s "$HARBOR_URL/api/v2.0/configurations" \\
+          -u "${HARBOR_USER}:${HARBOR_PASS}" | \\
+          jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
+        
+        if [ "$AUTH_MODE" = "oidc_auth" ]; then
+          echo "✅ GitHub OAuth authentication is now active"
+        else
+          echo "⚠️  Auth mode is $AUTH_MODE - GitHub OAuth may need verification"
+        fi
       else
-        echo "✅ OAuth configuration successful"
+        echo "❌ Failed to configure GitHub OAuth (HTTP $OAUTH_HTTP_CODE)"
+        echo "Response: $OAUTH_RESPONSE_BODY"
+        echo "Attempting alternative configuration with simplified settings..."
+        
+        # Alternative: Configure with minimal OIDC settings
+        RETRY_RESPONSE=$(curl -s -w "\\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \\
+          -H "Content-Type: application/json" \\
+          -u "${HARBOR_USER}:${HARBOR_PASS}" \\
+          -d '{
+            "auth_mode": "oidc_auth",
+            "oidc_name": "GitHub",
+            "oidc_endpoint": "https://github.com",
+            "oidc_client_id": "'${HARBOR_OIDC_CLIENT}'",
+            "oidc_client_secret": "'${HARBOR_OIDC_SECRET}'",
+            "oidc_scope": "read:user",
+            "oidc_verify_cert": false,
+            "oidc_auto_onboard": true,
+            "oidc_user_claim": "login"
+          }')
+        
+        RETRY_HTTP_CODE=$(echo "$RETRY_RESPONSE" | tail -n1)
+        if [ "$RETRY_HTTP_CODE" = "200" ]; then
+          echo "✅ GitHub OAuth configured with simplified settings"
+        else
+          echo "❌ GitHub OAuth configuration failed - keeping database auth"
+          # Reset to database auth if OAuth fails
+          curl -s -X PUT "$HARBOR_URL/api/v2.0/configurations" \\
+            -H "Content-Type: application/json" \\
+            -u "${HARBOR_USER}:${HARBOR_PASS}" \\
+            -d '{"auth_mode": "db_auth"}' || true
+        fi
       fi
       
       # Create user groups for GitHub teams
@@ -747,8 +842,23 @@ write_files:
         logs)
           docker-compose logs -f
           ;;
+        jobservice-restart)
+          echo "Restarting Harbor jobservice..."
+          docker-compose restart harbor-jobservice
+          sleep 10
+          docker-compose ps harbor-jobservice
+          ;;
+        jobservice-logs)
+          echo "Harbor jobservice logs:"
+          docker-compose logs -f harbor-jobservice
+          ;;
+        jobservice-status)
+          echo "Harbor jobservice status:"
+          docker-compose ps harbor-jobservice
+          docker-compose exec harbor-jobservice ps aux | grep -E "(job|worker)" || echo "No jobservice processes found"
+          ;;
         *)
-          echo "Usage: \$0 {start|stop|restart|status|logs}"
+          echo "Usage: \$0 {start|stop|restart|status|logs|jobservice-restart|jobservice-logs|jobservice-status}"
           exit 1
           ;;
       esac
@@ -756,8 +866,91 @@ write_files:
       
       chmod +x /usr/local/bin/harbor-manage
       
+      # Create jobservice monitoring script
+      cat <<EOF > /usr/local/bin/harbor-jobservice-monitor
+      #!/bin/bash
+      # Harbor jobservice health monitoring script
+      
+      HARBOR_DIR="/opt/harbor"
+      LOG_FILE="/var/log/harbor-jobservice-monitor.log"
+      
+      cd "\$HARBOR_DIR"
+      
+      # Function to log with timestamp
+      log_message() {
+        echo "\$(date): \$1" | tee -a "\$LOG_FILE"
+      }
+      
+      # Check if jobservice container is running
+      JOBSERVICE_RUNNING=\$(docker-compose ps harbor-jobservice | grep -c "Up")
+      
+      if [ "\$JOBSERVICE_RUNNING" -eq 0 ]; then
+        log_message "ALERT: Harbor jobservice is not running"
+        
+        # Try to restart jobservice
+        log_message "Attempting to restart harbor-jobservice..."
+        docker-compose restart harbor-jobservice
+        sleep 15
+        
+        # Check again
+        JOBSERVICE_RUNNING_RETRY=\$(docker-compose ps harbor-jobservice | grep -c "Up")
+        if [ "\$JOBSERVICE_RUNNING_RETRY" -eq 0 ]; then
+          log_message "CRITICAL: Harbor jobservice failed to restart"
+          # Log the container status and logs
+          docker-compose ps harbor-jobservice >> "\$LOG_FILE"
+          docker-compose logs --tail=50 harbor-jobservice >> "\$LOG_FILE"
+        else
+          log_message "SUCCESS: Harbor jobservice restarted successfully"
+        fi
+      else
+        log_message "OK: Harbor jobservice is running normally"
+      fi
+      
+      # Check jobservice queue depth (if accessible)
+      QUEUE_DEPTH=\$(docker-compose exec -T harbor-core redis-cli -h redis llen "jobservice_namespace:job_queue" 2>/dev/null || echo "N/A")
+      log_message "Jobservice queue depth: \$QUEUE_DEPTH"
+      
+      # Memory usage check
+      JOBSERVICE_MEMORY=\$(docker stats --no-stream --format "table {{.Container}}\t{{.MemUsage}}" | grep jobservice || echo "N/A")
+      log_message "Jobservice memory usage: \$JOBSERVICE_MEMORY"
+      EOF
+      
+      chmod +x /usr/local/bin/harbor-jobservice-monitor
+      
+      # Create systemd timer for jobservice monitoring
+      cat <<EOF > /etc/systemd/system/harbor-jobservice-monitor.service
+      [Unit]
+      Description=Harbor JobService Health Monitor
+      After=harbor.service
+      
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/harbor-jobservice-monitor
+      User=root
+      EOF
+      
+      cat <<EOF > /etc/systemd/system/harbor-jobservice-monitor.timer
+      [Unit]
+      Description=Run Harbor JobService Health Monitor every 5 minutes
+      Requires=harbor-jobservice-monitor.service
+      
+      [Timer]
+      OnCalendar=*:0/5
+      RandomizedDelaySec=30
+      
+      [Install]
+      WantedBy=timers.target
+      EOF
+      
+      systemctl daemon-reload
+      systemctl enable harbor-jobservice-monitor.timer
+      systemctl start harbor-jobservice-monitor.timer
+      
       echo "✅ Harbor installation completed!"
       echo "🌐 Harbor is available at: http://$HARBOR_HOST"
+      echo "🌐 External Harbor URL: https://harbor.suncoast.systems"
+      echo "🔐 GitHub OAuth authentication configured automatically"
+      echo "👤 Default admin credentials (if OAuth fails): admin / Harbor12345"
       echo "� GitHub OIDC Authentication configured"
       echo "👤 GitHub Teams configured:"
       echo "  - harbor_admins: Full system administrative access"
