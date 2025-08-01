@@ -155,7 +155,7 @@ write_files:
       # OIDC authentication settings - configured via API post-installation
       # These values will be set by the configuration API call
       oidc_name: GitHub
-      oidc_endpoint: https://github.com/login/oauth/authorize
+      oidc_endpoint: https://token.actions.githubusercontent.com
       oidc_client_id: ${HARBOR_OIDC_CLIENT}
       oidc_client_secret: ${HARBOR_OIDC_SECRET}
       oidc_scope: read:user,read:org
@@ -204,6 +204,8 @@ write_files:
       jobservice:
         # Maximum number of job workers in job service
         max_job_workers: 10
+        # The timeout for webhook job
+        webhook_job_timeout: 30
         # Loggers for the job service
         job_loggers:
           - name: "FILE"
@@ -214,6 +216,8 @@ write_files:
             level: INFO
         # Logger sweeper duration
         logger_sweeper_duration: 1
+        # Enable jobservice logger
+        job_log_dir: "/var/log/jobs"
       
       notification:
         # Maximum retry count for webhook job
@@ -497,7 +501,7 @@ write_files:
         -d "{
           \"auth_mode\": \"oidc_auth\",
           \"oidc_name\": \"GitHub\",
-          \"oidc_endpoint\": \"https://github.com/login/oauth/authorize\",
+          \"oidc_endpoint\": \"https://token.actions.githubusercontent.com\",
           \"oidc_client_id\": \"${HARBOR_OIDC_CLIENT}\",
           \"oidc_client_secret\": \"${HARBOR_OIDC_SECRET}\",
           \"oidc_scope\": \"read:user,read:org\",
