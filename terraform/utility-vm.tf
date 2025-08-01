@@ -89,8 +89,7 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
 
   disk {
     datastore_id = var.VM_DISK_STORAGE
-    file_id      = "local:iso/${basename(var.vm_img)}"
-    interface    = "scsi1"           # Secondary disk for cloud-init
+    interface    = "scsi1"           # Secondary disk for Harbor storage
     iothread     = true              # ✅ Improve I/O parallelism
     discard      = "on"
     size         = 100
