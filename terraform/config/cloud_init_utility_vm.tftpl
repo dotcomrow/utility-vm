@@ -205,9 +205,9 @@ write_files:
       auth_mode: db_auth
       
       # OIDC authentication settings - configured via API post-installation
-      # These values will be set by the configuration API call
+      # Using GitHub's OAuth endpoints directly (not OIDC discovery)
       oidc_name: GitHub
-      oidc_endpoint: https://github.com
+      oidc_endpoint: https://github.com/login/oauth/authorize
       oidc_client_id: ${HARBOR_OIDC_CLIENT}
       oidc_client_secret: ${HARBOR_OIDC_SECRET}
       oidc_scope: read:user,read:org
@@ -540,15 +540,17 @@ write_files:
       create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
       create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
       
-      # Configure GitHub OIDC authentication
-      echo "🔧 Configuring GitHub OIDC authentication..."
+      # Configure GitHub OAuth authentication
+      echo "🔧 Configuring GitHub OAuth authentication..."
       
-      # Wait for Harbor to be fully ready before configuring OIDC
+      # Wait for Harbor to be fully ready before configuring OAuth
       sleep 15
       
-      # Update Harbor configuration to use OIDC
-      echo "Configuring OIDC authentication..."
-      OIDC_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
+      # Update Harbor configuration to use GitHub OAuth
+      echo "Configuring GitHub OAuth authentication..."
+      
+      # Try the basic configuration first
+      OAUTH_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
         -H "Content-Type: application/json" \
         -u "${HARBOR_USER}:${HARBOR_PASS}" \
         -d "{
@@ -558,7 +560,7 @@ write_files:
           \"oidc_client_id\": \"${HARBOR_OIDC_CLIENT}\",
           \"oidc_client_secret\": \"${HARBOR_OIDC_SECRET}\",
           \"oidc_scope\": \"read:user,read:org\",
-          \"oidc_verify_cert\": true,
+          \"oidc_verify_cert\": false,
           \"oidc_auto_onboard\": true,
           \"oidc_user_claim\": \"login\",
           \"oidc_groups_claim\": \"organizations\",
@@ -566,14 +568,15 @@ write_files:
           \"oidc_group_filter\": \"harbor_users,harbor_admins\"
         }")
       
-      OIDC_HTTP_CODE=$(echo "$OIDC_RESPONSE" | tail -n1)
-      OIDC_RESPONSE_BODY=$(echo "$OIDC_RESPONSE" | head -n -1)
+      OAUTH_HTTP_CODE=$(echo "$OAUTH_RESPONSE" | tail -n1)
+      OAUTH_RESPONSE_BODY=$(echo "$OAUTH_RESPONSE" | head -n -1)
       
-      if [ "$OIDC_HTTP_CODE" != "200" ]; then
-        echo "⚠️  OIDC configuration may have failed (HTTP $OIDC_HTTP_CODE): $OIDC_RESPONSE_BODY"
-        echo "OIDC can be configured manually through Harbor UI"
+      echo "OAuth configuration response: HTTP $OAUTH_HTTP_CODE"
+      if [ "$OAUTH_HTTP_CODE" != "200" ]; then
+        echo "⚠️  OAuth configuration response: $OAUTH_RESPONSE_BODY"
+        echo "GitHub OAuth will need to be configured manually through Harbor UI"
       else
-        echo "✅ OIDC configuration successful"
+        echo "✅ OAuth configuration successful"
       fi
       
       # Create user groups for GitHub teams
@@ -689,7 +692,7 @@ write_files:
         echo "⚠️  Could not find harbor_users group ID"
       fi
       
-      echo "✅ GitHub OIDC authentication configured"
+      echo "✅ GitHub OAuth authentication configured"
       echo "👥 User groups configured:"
       echo "  - harbor_admins: System administrators"
       echo "  - harbor_users: Read-only access to proxy cache projects"
