@@ -94,6 +94,7 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
     discard      = "on"
     size         = 100
     file_format  = "raw"             # ✅ Best raw performance
+    backup       = false             # ✅ Exclude from Proxmox backups (Harbor data can be regenerated)
   }
 
   scsi_hardware = "virtio-scsi-single"  # ✅ Enable for efficient single queue
