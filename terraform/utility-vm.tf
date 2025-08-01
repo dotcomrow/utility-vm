@@ -110,7 +110,7 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
 
   initialization {
     datastore_id = "local"
-    interface    = "scsi1"
+    interface    = "ide2"
     ip_config {
       ipv4 {
         address = "10.0.0.200/24"
