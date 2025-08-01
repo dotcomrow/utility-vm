@@ -82,9 +82,19 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
     interface    = "scsi0"           # ✅ Use SCSI for iothread support
     iothread     = true              # ✅ Improve I/O parallelism
     discard      = "on"
-    size         = 100
+    size         = 10
     file_format  = "raw"             # ✅ Best raw performance
     cache     = "unsafe"
+  }
+
+  disk {
+    datastore_id = var.VM_DISK_STORAGE
+    file_id      = "local:iso/${basename(var.vm_img)}"
+    interface    = "scsi1"           # Secondary disk for cloud-init
+    iothread     = true              # ✅ Improve I/O parallelism
+    discard      = "on"
+    size         = 100
+    file_format  = "raw"             # ✅ Best raw performance
   }
 
   scsi_hardware = "virtio-scsi-single"  # ✅ Enable for efficient single queue

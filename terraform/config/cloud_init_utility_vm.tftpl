@@ -105,6 +105,58 @@ write_files:
       #!/bin/bash
       echo "🔧 Setting up utility VM..."
 
+      # Setup dedicated Harbor disk
+      echo "💾 Setting up dedicated Harbor disk..."
+      
+      # Format the second disk (100GB) for Harbor storage
+      HARBOR_DISK="/dev/sdb"
+      HARBOR_MOUNT="/data/harbor"
+      
+      # Check if disk exists
+      if [ -b "$HARBOR_DISK" ]; then
+        echo "Found Harbor disk: $HARBOR_DISK"
+        
+        # Create filesystem if not already formatted
+        if ! blkid "$HARBOR_DISK"; then
+          echo "Formatting Harbor disk with ext4..."
+          mkfs.ext4 -F "$HARBOR_DISK"
+        else
+          echo "Harbor disk already formatted"
+        fi
+        
+        # Create mount point
+        mkdir -p "$HARBOR_MOUNT"
+        
+        # Get UUID for persistent mounting
+        DISK_UUID=$(blkid -s UUID -o value "$HARBOR_DISK")
+        
+        # Add to fstab if not already present
+        if ! grep -q "$DISK_UUID" /etc/fstab; then
+          echo "UUID=$DISK_UUID $HARBOR_MOUNT ext4 defaults,noatime 0 2" >> /etc/fstab
+          echo "Added Harbor disk to fstab"
+        fi
+        
+        # Mount the disk
+        mount -a
+        
+        # Verify mount
+        if mountpoint -q "$HARBOR_MOUNT"; then
+          echo "✅ Harbor disk mounted successfully at $HARBOR_MOUNT"
+          df -h "$HARBOR_MOUNT"
+        else
+          echo "❌ Failed to mount Harbor disk"
+          exit 1
+        fi
+        
+        # Set proper ownership and permissions
+        chown -R root:root "$HARBOR_MOUNT"
+        chmod 755 "$HARBOR_MOUNT"
+        
+      else
+        echo "⚠️  Harbor disk $HARBOR_DISK not found, using default storage"
+        mkdir -p /data/harbor
+      fi
+
       # Harbor installation and configuration
       
       echo "📦 Installing Harbor ${HARBOR_VERSION}..."
@@ -155,14 +207,14 @@ write_files:
       # OIDC authentication settings - configured via API post-installation
       # These values will be set by the configuration API call
       oidc_name: GitHub
-      oidc_endpoint: https://token.actions.githubusercontent.com
+      oidc_endpoint: https://github.com
       oidc_client_id: ${HARBOR_OIDC_CLIENT}
       oidc_client_secret: ${HARBOR_OIDC_SECRET}
       oidc_scope: read:user,read:org
       oidc_verify_cert: true
       oidc_auto_onboard: true
       oidc_user_claim: login
-      oidc_groups_claim: groups
+      oidc_groups_claim: organizations
       oidc_admin_group: harbor_admins
       oidc_group_filter: harbor_users,harbor_admins
       
@@ -211,13 +263,13 @@ write_files:
           - name: "FILE"
             level: INFO
             settings:
-              base_dir: "/var/log/jobs"
+              base_dir: "/data/harbor/logs/jobs"
           - name: "STD_OUTPUT"
             level: INFO
         # Logger sweeper duration
         logger_sweeper_duration: 1
         # Enable jobservice logger
-        job_log_dir: "/var/log/jobs"
+        job_log_dir: "/data/harbor/logs/jobs"
       
       notification:
         # Maximum retry count for webhook job
@@ -242,7 +294,7 @@ write_files:
           # are all valid.
           rotate_size: 200M
           # The directory on your host that store log
-          location: /var/log/harbor
+          location: /data/harbor/logs
       
       #This attribute is for migrator to detect the version of the .cfg file, DO NOT MODIFY!
       _version: 2.11.0
@@ -364,8 +416,9 @@ write_files:
         expire_hours: 24
       EOF
       
-      # Create required directories for Harbor jobservice logging
-      mkdir -p /var/log/jobs
+      # Create required directories for Harbor logging on dedicated disk
+      mkdir -p /data/harbor/logs/jobs
+      mkdir -p /data/harbor/logs
       
       # Install Harbor
       echo "🚀 Installing Harbor..."
@@ -501,14 +554,14 @@ write_files:
         -d "{
           \"auth_mode\": \"oidc_auth\",
           \"oidc_name\": \"GitHub\",
-          \"oidc_endpoint\": \"https://token.actions.githubusercontent.com\",
+          \"oidc_endpoint\": \"https://github.com\",
           \"oidc_client_id\": \"${HARBOR_OIDC_CLIENT}\",
           \"oidc_client_secret\": \"${HARBOR_OIDC_SECRET}\",
           \"oidc_scope\": \"read:user,read:org\",
           \"oidc_verify_cert\": true,
           \"oidc_auto_onboard\": true,
           \"oidc_user_claim\": \"login\",
-          \"oidc_groups_claim\": \"groups\",
+          \"oidc_groups_claim\": \"organizations\",
           \"oidc_admin_group\": \"harbor_admins\",
           \"oidc_group_filter\": \"harbor_users,harbor_admins\"
         }")
