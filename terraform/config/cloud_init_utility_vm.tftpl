@@ -612,10 +612,7 @@ write_files:
         echo "Setting up GitHub OAuth with Harbor API..."
       
       # Apply GitHub OAuth configuration to Harbor
-      OAUTH_RESPONSE=$(curl -s -w "\\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \\
-        -H "Content-Type: application/json" \\
-        -u "${HARBOR_USER}:${HARBOR_PASS}" \\
-        -d '{
+      OAUTH_RESPONSE=$(curl -s -w "\\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" -H "Content-Type: application/json" -u "${HARBOR_USER}:${HARBOR_PASS}" -d '{
           "auth_mode": "oidc_auth",
           "oidc_name": "GitHub",
           "oidc_endpoint": "https://github.com",
@@ -641,9 +638,7 @@ write_files:
         
         # Verify OAuth configuration
         echo "Verifying GitHub OAuth configuration..."
-        AUTH_MODE=$(curl -s "$HARBOR_URL/api/v2.0/configurations" \\
-          -u "${HARBOR_USER}:${HARBOR_PASS}" | \\
-          jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
+        AUTH_MODE=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "${HARBOR_USER}:${HARBOR_PASS}" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
         
         if [ "$AUTH_MODE" = "oidc_auth" ]; then
           echo "✅ GitHub OAuth authentication is now active"
@@ -656,10 +651,7 @@ write_files:
         echo "🔧 Attempting alternative configuration with simplified settings..."
         
         # Alternative: Configure with minimal OIDC settings
-        RETRY_RESPONSE=$(curl -s -w "\\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \\
-          -H "Content-Type: application/json" \\
-          -u "${HARBOR_USER}:${HARBOR_PASS}" \\
-          -d '{
+        RETRY_RESPONSE=$(curl -s -w "\\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" -H "Content-Type: application/json" -u "${HARBOR_USER}:${HARBOR_PASS}" -d '{
             "auth_mode": "oidc_auth",
             "oidc_name": "GitHub",
             "oidc_endpoint": "https://github.com",
@@ -677,10 +669,7 @@ write_files:
         else
           echo "❌ GitHub OAuth configuration failed - keeping database auth"
           # Reset to database auth if OAuth fails
-          curl -s -X PUT "$HARBOR_URL/api/v2.0/configurations" \\
-            -H "Content-Type: application/json" \\
-            -u "${HARBOR_USER}:${HARBOR_PASS}" \\
-            -d '{"auth_mode": "db_auth"}' || true
+          curl -s -X PUT "$HARBOR_URL/api/v2.0/configurations" -H "Content-Type: application/json" -u "${HARBOR_USER}:${HARBOR_PASS}" -d '{"auth_mode": "db_auth"}' || true
         fi
       fi
       fi
