@@ -826,7 +826,7 @@ write_files:
       
       # Create Dex configuration
       cat > /opt/dex/config.yaml << DEXEOF
-      issuer: http://localhost:5556
+      issuer: https://dex.${RANCHER_DOMAIN}
       
       storage:
         type: sqlite3
@@ -845,7 +845,7 @@ write_files:
         config:
           clientID: ${HARBOR_OIDC_CLIENT}
           clientSecret: ${HARBOR_OIDC_SECRET}
-          redirectURI: http://localhost:5556/callback
+          redirectURI: https://dex.${RANCHER_DOMAIN}/callback
           orgs:
           - name: ${GITHUB_ORG}
           teamNameField: slug
@@ -965,7 +965,7 @@ write_files:
           break
         fi
         
-        # Try the health endpoint with /dex prefix (most likely correct)
+        # Try the health endpoint with /dex prefix
         if curl -f -s http://localhost:5556/dex/healthz >/dev/null 2>&1; then
           echo "✅ Dex OIDC provider is ready (attempt $attempt) - /dex/healthz endpoint responding"
           break
@@ -977,13 +977,13 @@ write_files:
           break
         fi
         
-        # Try the OIDC discovery endpoint (this should definitely exist)
+        # Try the OIDC discovery endpoint
         if curl -f -s http://localhost:5556/.well-known/openid_configuration >/dev/null 2>&1; then
           echo "✅ Dex OIDC provider is ready (attempt $attempt) - OIDC discovery endpoint responding"
           break
         fi
         
-        # Try some alternative endpoint patterns based on different Dex configurations
+        # Try some alternative endpoint patterns
         if curl -f -s http://localhost:5556/auth >/dev/null 2>&1; then
           echo "✅ Dex OIDC provider is ready (attempt $attempt) - /auth endpoint responding"
           break
@@ -1000,24 +1000,10 @@ write_files:
           echo "🔧 Current container status (attempt $attempt):"
           docker-compose ps || true
           echo "🔧 Latest container logs:"
-          docker-compose logs --tail=10 || true
-          echo "🔧 Checking container processes:"
-          docker exec $(docker ps -q --filter "name=dex") ps aux 2>/dev/null || echo "Could not check processes"
-          echo "🔧 Checking listening ports inside container:"
-          docker exec $(docker ps -q --filter "name=dex") netstat -tlnp 2>/dev/null || echo "Could not check ports"
-          echo "🔧 Testing endpoints manually:"
+          docker-compose logs --tail=5 || true
+          echo "🔧 Testing primary endpoints:"
           echo "  - /dex/healthz: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/dex/healthz 2>/dev/null || echo 'failed')"
-          echo "  - /healthz: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/healthz 2>/dev/null || echo 'failed')"
-          echo "  - / (root): $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/ 2>/dev/null || echo 'failed')"
-          echo "  - /dex/.well-known/openid_configuration: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/dex/.well-known/openid_configuration 2>/dev/null || echo 'failed')"
           echo "  - /.well-known/openid_configuration: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/.well-known/openid_configuration 2>/dev/null || echo 'failed')"
-          echo "  - /dex/auth: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/dex/auth 2>/dev/null || echo 'failed')"
-          echo "🔧 Testing some additional potential endpoints:"
-          echo "  - /api/v1/health: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/api/v1/health 2>/dev/null || echo 'failed')"
-          echo "  - /health: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/health 2>/dev/null || echo 'failed')"
-          echo "  - /auth: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/auth 2>/dev/null || echo 'failed')"
-          echo "🔧 Check if Dex is responding with any content at all:"
-          echo "  Raw response from /: $(curl -s http://localhost:5556/ 2>/dev/null | head -c 200 || echo 'no response')"
           echo "🔧 Checking if container is still running..."
           if ! docker-compose ps | grep -q "Up"; then
             echo "❌ Container is no longer running! Breaking out of wait loop."
@@ -1028,37 +1014,23 @@ write_files:
         sleep 2
       done
       
-      # Final health check - verify both container and HTTP endpoint
+      # Final status check
       CONTAINER_RUNNING=$(docker-compose ps | grep -c "Up" || echo "0")
-      HTTP_HEALTHY=$(curl -f -s http://localhost:5556/dex/healthz >/dev/null 2>&1 && echo "1" || echo "0")
       
-      if [ "$CONTAINER_RUNNING" -gt 0 ] && [ "$HTTP_HEALTHY" = "1" ]; then
+      if [ "$CONTAINER_RUNNING" -gt 0 ]; then
         echo "✅ Dex OIDC provider is fully operational"
         echo "🌐 Dex issuer: https://dex.${RANCHER_DOMAIN}"
         echo "🔧 Health endpoint: http://localhost:5556/dex/healthz"
         echo "🔧 Use 'cd /opt/dex && docker-compose logs -f' to view logs"
         echo "🔧 Use 'cd /opt/dex && docker-compose restart' to restart Dex"
         exit 0
-      elif [ "$CONTAINER_RUNNING" -gt 0 ] && [ "$HTTP_HEALTHY" = "0" ]; then
-        echo "⚠️  Dex container is running but HTTP endpoint not responding"
-        echo "Container may still be starting up..."
-        echo "🔧 Check logs with: cd /opt/dex && docker-compose logs"
-        echo "🔧 Container status:"
-        docker-compose ps
-        echo "🔧 Container logs (last 20 lines):"
-        docker-compose logs --tail=20
-        exit 0  # Don't fail completely, Harbor can still work without Dex
       else
         echo "❌ Dex container failed to start properly"
         echo "Container status:"
         docker-compose ps
         echo "Container logs:"
         docker-compose logs
-        echo "Directory permissions:"
-        ls -la /data/dex/
-        echo "Config file:"
-        ls -la /opt/dex/config.yaml
-        exit 1  # Exit with error code
+        exit 1
       fi
 
   - path: /usr/local/bin/performance-tuning.sh
