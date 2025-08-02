@@ -463,7 +463,7 @@ write_files:
       HARBOREOF
       
       # Replace the hostname placeholder
-      sed -i "s/HOSTNAME_PLACEHOLDER/$HARBOR_HOSTNAME/g" /opt/harbor/harbor.yml
+      sed -i "s/HOSTNAME_PLACEHOLDER/$${HARBOR_HOSTNAME}/g" /opt/harbor/harbor.yml
       
       # Create required directories for Harbor logging on dedicated disk
       mkdir -p /data/harbor/logs/jobs
@@ -1851,6 +1851,14 @@ write_files:
       harbor-manage status 2>/dev/null || echo "Harbor not available"
 
 runcmd:
+  - echo "$(date): Cloud-init runcmd starting - VM booted successfully" | tee /var/log/cloud-init-debug.log
+  - cloud-init status --long >> /var/log/cloud-init-debug.log 2>&1 || echo "cloud-init status failed" >> /var/log/cloud-init-debug.log
+  - echo "$(date): About to reload systemd" >> /var/log/cloud-init-debug.log
   - systemctl daemon-reload
+  - echo "$(date): About to enable initial-setup.service" >> /var/log/cloud-init-debug.log
   - systemctl enable initial-setup.service
+  - echo "$(date): About to start initial-setup.service" >> /var/log/cloud-init-debug.log
   - systemctl start initial-setup.service
+  - echo "$(date): Cloud-init runcmd completed successfully" >> /var/log/cloud-init-debug.log
+
+final_message: "Cloud-init setup completed at $(date). Check /var/log/cloud-init-debug.log for details."
