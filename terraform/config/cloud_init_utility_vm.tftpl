@@ -598,232 +598,83 @@ write_files:
       create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
       create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
       
-      # Configure GitHub OAuth authentication automatically
-      echo "🔧 Configuring GitHub OAuth authentication..."
+      echo "✅ Harbor installation completed!"
+      echo "🌐 Harbor is available at: http://$HARBOR_HOST"
+      echo "🌐 External Harbor URL: https://harbor.${RANCHER_DOMAIN}"
+      echo "🔐 Harbor authentication: Database mode (admin / Harbor12345)"
+      echo "⚠️  IMPORTANT: To enable GitHub OAuth:"
+      echo "   1. Deploy Dex OIDC provider as intermediary"
+      echo "   2. Configure Dex with GitHub OAuth credentials"
+      echo "   3. Configure Harbor to trust Dex as OIDC provider"
+      echo "   Note: Harbor does not support direct GitHub OAuth - requires OIDC provider like Dex"
+      echo ""
+      echo "🔧 Use 'harbor-manage' command to manage Harbor service"
+      echo ""
+      echo "📋 Proxy cache projects created:"
+      echo "  - dockerhub (Docker Hub): $HARBOR_HOST/dockerhub/"
+      echo "  - gcr (Google Container Registry): $HARBOR_HOST/gcr/"
+      echo "  - quay (Quay.io): $HARBOR_HOST/quay/"
+      echo "  - k8s-gcr (Kubernetes GCR): $HARBOR_HOST/k8s-gcr/"
+      echo "  - registry-k8s (Kubernetes Registry): $HARBOR_HOST/registry-k8s/"
+      echo ""
+      echo "🚀 Configure your Kubernetes cluster to use Harbor as pull-through cache:"
+      echo "  Example: docker pull $HARBOR_HOST/dockerhub/nginx:latest"
+      echo ""
       
-      # Verify environment variables are set
-      if [ -z "${HARBOR_OIDC_CLIENT}" ] || [ -z "${HARBOR_OIDC_SECRET}" ]; then
-        echo "❌ GitHub OAuth credentials not provided (HARBOR_OIDC_CLIENT or HARBOR_OIDC_SECRET missing)"
-        echo "⚠️  Keeping database authentication mode"
-      else
-        echo "✅ GitHub OAuth credentials found"
-        echo "🔧 Client ID: ${HARBOR_OIDC_CLIENT}"
-        echo "🔧 Using endpoint: https://github.com"
+      # Deploy Dex OIDC provider if GitHub OAuth credentials are provided
+      if [ -n "${HARBOR_OIDC_CLIENT}" ] && [ -n "${HARBOR_OIDC_SECRET}" ]; then
+        echo "🔧 Deploying Dex OIDC provider for GitHub OAuth integration..."
+        /usr/local/bin/setup-dex.sh
         
-        # Wait for Harbor to be fully ready before configuring OAuth
-        sleep 15
+        # Configure Harbor to use Dex OIDC
+        echo "🔧 Configuring Harbor to use Dex OIDC..."
+        sleep 10  # Wait for Dex to be fully ready
         
-        # GitHub OAuth configuration via Harbor API
-        echo "Setting up GitHub OAuth with Harbor API..."
-      
-      # Apply GitHub OAuth configuration to Harbor
-      OAUTH_RESPONSE=$(curl -s -w "\\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" -H "Content-Type: application/json" -u "${HARBOR_USER}:${HARBOR_PASS}" -d '{
-          "auth_mode": "oidc_auth",
-          "oidc_name": "GitHub",
-          "oidc_endpoint": "https://github.com",
-          "oidc_client_id": "'${HARBOR_OIDC_CLIENT}'",
-          "oidc_client_secret": "'${HARBOR_OIDC_SECRET}'",
-          "oidc_scope": "read:user,user:email",
-          "oidc_verify_cert": true,
-          "oidc_auto_onboard": true,
-          "oidc_user_claim": "login",
-          "oidc_groups_claim": "",
-          "oidc_admin_group": "",
-          "oidc_group_filter": ""
-        }')
-      
-      OAUTH_HTTP_CODE=$(echo "$OAUTH_RESPONSE" | tail -n1)
-      OAUTH_RESPONSE_BODY=$(echo "$OAUTH_RESPONSE" | head -n -1)
-      
-      if [ "$OAUTH_HTTP_CODE" = "200" ]; then
-        echo "✅ GitHub OAuth configuration applied successfully"
+        # Get the Dex client secret that was generated
+        DEX_CLIENT_SECRET=$(grep "secret:" /opt/dex/config.yaml | sed "s/.*secret: '//" | sed "s/'.*//")
         
-        # Wait for configuration to take effect
-        sleep 10
-        
-        # Verify OAuth configuration
-        echo "Verifying GitHub OAuth configuration..."
-        AUTH_MODE=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "${HARBOR_USER}:${HARBOR_PASS}" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
-        
-        if [ "$AUTH_MODE" = "oidc_auth" ]; then
-          echo "✅ GitHub OAuth authentication is now active"
-        else
-          echo "⚠️  Auth mode is $AUTH_MODE - GitHub OAuth may need verification"
-        fi
-      else
-        echo "❌ Failed to configure GitHub OAuth (HTTP $OAUTH_HTTP_CODE)"
-        echo "❌ Error response: $OAUTH_RESPONSE_BODY"
-        echo "🔧 Attempting alternative configuration with simplified settings..."
-        
-        # Alternative: Configure with minimal OIDC settings
-        RETRY_RESPONSE=$(curl -s -w "\\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" -H "Content-Type: application/json" -u "${HARBOR_USER}:${HARBOR_PASS}" -d '{
-            "auth_mode": "oidc_auth",
-            "oidc_name": "GitHub",
-            "oidc_endpoint": "https://github.com",
-            "oidc_client_id": "'${HARBOR_OIDC_CLIENT}'",
-            "oidc_client_secret": "'${HARBOR_OIDC_SECRET}'",
-            "oidc_scope": "read:user",
-            "oidc_verify_cert": false,
-            "oidc_auto_onboard": true,
-            "oidc_user_claim": "login"
-          }')
-        
-        RETRY_HTTP_CODE=$(echo "$RETRY_RESPONSE" | tail -n1)
-        if [ "$RETRY_HTTP_CODE" = "200" ]; then
-          echo "✅ GitHub OAuth configured with simplified settings"
-        else
-          echo "❌ GitHub OAuth configuration failed - keeping database auth"
-          # Reset to database auth if OAuth fails
-          curl -s -X PUT "$HARBOR_URL/api/v2.0/configurations" -H "Content-Type: application/json" -u "${HARBOR_USER}:${HARBOR_PASS}" -d '{"auth_mode": "db_auth"}' || true
-        fi
-      fi
-      fi
-      
-      # Create user groups for GitHub teams
-      echo "👥 Creating user groups for GitHub teams..."
-      
-      # Create harbor_admins group
-      echo "Creating harbor_admins group..."
-      ADMIN_GROUP_RESPONSE=$(curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/usergroups" \
-        -H "Content-Type: application/json" \
-        -u "${HARBOR_USER}:${HARBOR_PASS}" \
-        -d "{
-          \"group_name\": \"harbor_admins\",
-          \"group_type\": 2,
-          \"ldap_group_dn\": \"harbor_admins\"
-        }")
-      
-      ADMIN_HTTP_CODE=$(echo "$ADMIN_GROUP_RESPONSE" | tail -n1)
-      if [ "$ADMIN_HTTP_CODE" != "201" ] && [ "$ADMIN_HTTP_CODE" != "409" ]; then
-        echo "⚠️  Failed to create harbor_admins group (HTTP $ADMIN_HTTP_CODE)"
-      else
-        echo "✅ harbor_admins group created"
-      fi
-      
-      # Create harbor_users group  
-      echo "Creating harbor_users group..."
-      USER_GROUP_RESPONSE=$(curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/usergroups" \
-        -H "Content-Type: application/json" \
-        -u "${HARBOR_USER}:${HARBOR_PASS}" \
-        -d "{
-          \"group_name\": \"harbor_users\",
-          \"group_type\": 2,
-          \"ldap_group_dn\": \"harbor_users\"
-        }")
-      
-      USER_HTTP_CODE=$(echo "$USER_GROUP_RESPONSE" | tail -n1)
-      if [ "$USER_HTTP_CODE" != "201" ] && [ "$USER_HTTP_CODE" != "409" ]; then
-        echo "⚠️  Failed to create harbor_users group (HTTP $USER_HTTP_CODE)"
-      else
-        echo "✅ harbor_users group created"
-      fi
-      
-      # Get group IDs for role assignment
-      echo "Getting group IDs for role assignment..."
-      sleep 5  # Allow groups to be fully created
-      
-      ADMIN_GROUP_ID=$(curl -s "$HARBOR_URL/api/v2.0/usergroups" \
-        -u "${HARBOR_USER}:${HARBOR_PASS}" | \
-        jq -r '.[] | select(.group_name=="harbor_admins") | .id' 2>/dev/null)
-      
-      USER_GROUP_ID=$(curl -s "$HARBOR_URL/api/v2.0/usergroups" \
-        -u "${HARBOR_USER}:${HARBOR_PASS}" | \
-        jq -r '.[] | select(.group_name=="harbor_users") | .id' 2>/dev/null)
-      
-      echo "Admin Group ID: $ADMIN_GROUP_ID"
-      echo "User Group ID: $USER_GROUP_ID"
-      
-      # Add harbor_admins group as system admin (to library project - project ID 1)
-      if [ ! -z "$ADMIN_GROUP_ID" ] && [ "$ADMIN_GROUP_ID" != "null" ]; then
-        echo "Adding harbor_admins group to library project with admin role..."
-        curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects/1/members" \
+        # Configure Harbor OIDC settings
+        OIDC_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
           -H "Content-Type: application/json" \
           -u "${HARBOR_USER}:${HARBOR_PASS}" \
           -d "{
-            \"member_group\": {
-              \"id\": $ADMIN_GROUP_ID,
-              \"group_name\": \"harbor_admins\"
-            },
-            \"role_id\": 1
-          }" | tail -n1 | {
-            read http_code
-            if [ "$http_code" = "201" ] || [ "$http_code" = "409" ]; then
-              echo "✅ harbor_admins group added to library project"
-            else
-              echo "⚠️  Failed to add harbor_admins to library project (HTTP $http_code)"
-            fi
-          }
+            \"auth_mode\": \"oidc_auth\",
+            \"oidc_name\": \"GitHub via Dex\",
+            \"oidc_endpoint\": \"https://dex.${RANCHER_DOMAIN}\",
+            \"oidc_client_id\": \"harbor\",
+            \"oidc_client_secret\": \"$DEX_CLIENT_SECRET\",
+            \"oidc_scope\": \"openid email profile groups\",
+            \"oidc_verify_cert\": false,
+            \"oidc_auto_onboard\": true,
+            \"oidc_user_claim\": \"email\",
+            \"oidc_groups_claim\": \"groups\"
+          }")
+        
+        OIDC_HTTP_CODE=$(echo "$OIDC_CONFIG_RESPONSE" | tail -n1)
+        OIDC_RESPONSE_BODY=$(echo "$OIDC_CONFIG_RESPONSE" | head -n -1)
+        
+        if [ "$OIDC_HTTP_CODE" = "200" ]; then
+          echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
+          echo "🔗 GitHub OIDC Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+          echo "👤 Users can now login with their GitHub accounts"
+        else
+          echo "⚠️  Harbor OIDC configuration failed (HTTP $OIDC_HTTP_CODE)"
+          echo "Response: $OIDC_RESPONSE_BODY"
+          echo "Harbor will continue using database authentication"
+        fi
+        
+        echo "✅ GitHub OAuth authentication via Dex configured successfully"
       else
-        echo "⚠️  Could not find harbor_admins group ID"
+        echo "ℹ️  No GitHub OAuth credentials provided"
+        echo "ℹ️  Harbor using database authentication (admin/Harbor12345)"
+        echo "ℹ️  To enable GitHub OAuth, provide HARBOR_OIDC_CLIENT and HARBOR_OIDC_SECRET variables"
       fi
       
-      # Add harbor_users group with limited read access to proxy cache projects
-      if [ ! -z "$USER_GROUP_ID" ] && [ "$USER_GROUP_ID" != "null" ]; then
-        echo "Adding harbor_users group to proxy cache projects..."
-        for project in dockerhub gcr quay k8s-gcr registry-k8s; do
-          echo "Adding harbor_users to project: $project"
-          PROJECT_ID=$(curl -s "$HARBOR_URL/api/v2.0/projects?name=$project" \
-            -u "${HARBOR_USER}:${HARBOR_PASS}" | \
-            jq -r '.[0].project_id // empty' 2>/dev/null)
-          
-          if [ ! -z "$PROJECT_ID" ] && [ "$PROJECT_ID" != "null" ]; then
-            curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects/$PROJECT_ID/members" \
-              -H "Content-Type: application/json" \
-              -u "${HARBOR_USER}:${HARBOR_PASS}" \
-              -d "{
-                \"member_group\": {
-                  \"id\": $USER_GROUP_ID,
-                  \"group_name\": \"harbor_users\"
-                },
-                \"role_id\": 3
-              }" | tail -n1 | {
-                read http_code
-                if [ "$http_code" = "201" ] || [ "$http_code" = "409" ]; then
-                  echo "✅ harbor_users group added to $project project"
-                else
-                  echo "⚠️  Failed to add harbor_users to $project project (HTTP $http_code)"
-                fi
-              }
-          else
-            echo "⚠️  Could not find project ID for $project"
-          fi
-        done
-      else
-        echo "⚠️  Could not find harbor_users group ID"
-      fi
-      
-      echo "✅ GitHub OAuth authentication configured"
-      echo "👥 User groups configured:"
-      echo "  - harbor_admins: System administrators"
-      echo "  - harbor_users: Read-only access to proxy cache projects"
-      
-      # Create systemd service for Harbor management
-      cat <<EOF > /etc/systemd/system/harbor.service
-      [Unit]
-      Description=Harbor
-      After=docker.service systemd-networkd.service systemd-resolved.service
-      Requires=docker.service
-      Documentation=http://github.com/goharbor/harbor
-      
-      [Service]
-      Type=oneshot
-      ExecStart=/opt/harbor/prepare && /usr/bin/docker-compose -f /opt/harbor/docker-compose.yml up -d
-      ExecStop=/usr/bin/docker-compose -f /opt/harbor/docker-compose.yml down
-      WorkingDirectory=/opt/harbor
-      RemainAfterExit=yes
-      
-      [Install]
-      WantedBy=multi-user.target
-      EOF
-      
-      systemctl daemon-reload
-      systemctl enable harbor
-      
-      # Create helper script for Harbor management
-      cat <<EOF > /usr/local/bin/harbor-manage
+      # Create comprehensive Harbor management script
+      cat > /usr/local/bin/harbor-manage << 'HARBORMGMTEOF'
       #!/bin/bash
       cd /opt/harbor
-      case "\$1" in
+      case "$1" in
         start)
           docker-compose up -d
           ;;
@@ -832,6 +683,7 @@ write_files:
           ;;
         restart)
           docker-compose down
+          sleep 5
           docker-compose up -d
           ;;
         status)
@@ -839,6 +691,31 @@ write_files:
           ;;
         logs)
           docker-compose logs -f
+          ;;
+        auth-status)
+          echo "Harbor Authentication Status:"
+          HARBOR_URL="http://utility-node.internal.lan"
+          AUTH_MODE=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
+          if [ "$AUTH_MODE" = "oidc_auth" ]; then
+            echo "✅ OIDC Authentication enabled"
+            OIDC_NAME=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" | jq -r '.oidc_name.value // .oidc_name' 2>/dev/null)
+            OIDC_ENDPOINT=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" | jq -r '.oidc_endpoint.value // .oidc_endpoint' 2>/dev/null)
+            echo "   Provider: $OIDC_NAME"
+            echo "   Endpoint: $OIDC_ENDPOINT"
+          else
+            echo "ℹ️  Database Authentication enabled (auth_mode: $AUTH_MODE)"
+          fi
+          ;;
+        oidc-login-url)
+          echo "GitHub OIDC Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+          ;;
+        health)
+          HARBOR_URL="http://utility-node.internal.lan"
+          if curl -f -s "$HARBOR_URL/api/v2.0/systeminfo" >/dev/null; then
+            echo "✅ Harbor API is healthy"
+          else
+            echo "❌ Harbor API is not responding"
+          fi
           ;;
         jobservice-restart)
           echo "Restarting Harbor jobservice..."
@@ -860,136 +737,183 @@ write_files:
             echo "❌ Could not find jobservice container"
           fi
           ;;
-        jobservice-status)
-          echo "Harbor jobservice status:"
-          docker ps --filter "name=jobservice"
-          JOBSERVICE_CONTAINER=$(docker ps --filter "name=jobservice" --format "{{.Names}}" | head -1)
-          if [ ! -z "$JOBSERVICE_CONTAINER" ]; then
-            docker exec "$JOBSERVICE_CONTAINER" ps aux | grep -E "(job|worker)" || echo "No jobservice processes found"
-          else
-            echo "❌ Could not find running jobservice container"
-          fi
-          ;;
         *)
-          echo "Usage: \$0 {start|stop|restart|status|logs|jobservice-restart|jobservice-logs|jobservice-status}"
+          echo "Usage: $0 {start|stop|restart|status|logs|auth-status|oidc-login-url|health|jobservice-restart|jobservice-logs}"
           exit 1
           ;;
       esac
-      EOF
+      HARBORMGMTEOF
       
       chmod +x /usr/local/bin/harbor-manage
-      
-      # Create jobservice monitoring script
-      cat <<EOF > /usr/local/bin/harbor-jobservice-monitor
+    else
+      echo "❌ Harbor installation failed!" | tee -a /var/log/harbor-install.log
+      exit 1  
+    fi
+
+  - path: /usr/local/bin/setup-dex.sh
+    permissions: '0755'
+    content: |
       #!/bin/bash
-      # Harbor jobservice health monitoring script
+      set -e
+      echo "🔧 Installing and configuring Dex OIDC provider..."
       
-      HARBOR_DIR="/opt/harbor"
-      LOG_FILE="/var/log/harbor-jobservice-monitor.log"
+      # Create directories
+      mkdir -p /opt/dex /data/dex
       
-      cd "\$HARBOR_DIR"
+      # Download and install Dex
+      cd /tmp
+      DEX_VERSION="v2.37.0"
+      echo "📦 Downloading Dex $DEX_VERSION..."
+      wget -q "https://github.com/dexidp/dex/releases/download/$DEX_VERSION/dex-$DEX_VERSION-linux-amd64.tar.gz"
+      tar xzf "dex-$DEX_VERSION-linux-amd64.tar.gz"
+      cp "dex-$DEX_VERSION-linux-amd64/dex" /usr/local/bin/dex
+      chmod +x /usr/local/bin/dex
       
-      # Function to log with timestamp
-      log_message() {
-        echo "\$(date): \$1" | tee -a "\$LOG_FILE"
-      }
+      # Generate client secret for Harbor
+      DEX_CLIENT_SECRET=$(openssl rand -hex 16)
+      echo "Generated Dex client secret for Harbor"
       
-      # Check if jobservice container is running
-      JOBSERVICE_RUNNING=\$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
+      # Create Dex configuration
+      cat > /opt/dex/config.yaml << 'DEXEOF'
+      issuer: https://dex.${RANCHER_DOMAIN}
       
-      if [ "\$JOBSERVICE_RUNNING" -eq 0 ]; then
-        log_message "ALERT: Harbor jobservice is not running"
-        
-        # Try to restart jobservice
-        log_message "Attempting to restart harbor-jobservice..."
-        JOBSERVICE_CONTAINER=\$(docker ps -a --filter "name=jobservice" --format "{{.Names}}" | head -1)
-        if [ ! -z "\$JOBSERVICE_CONTAINER" ]; then
-          docker restart "\$JOBSERVICE_CONTAINER"
-          sleep 15
-          
-          # Check again
-          JOBSERVICE_RUNNING_RETRY=\$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
-          if [ "\$JOBSERVICE_RUNNING_RETRY" -eq 0 ]; then
-            log_message "CRITICAL: Harbor jobservice failed to restart"
-            # Log the container status and logs
-            docker ps --filter "name=jobservice" >> "\$LOG_FILE"
-            docker logs --tail=50 "\$JOBSERVICE_CONTAINER" >> "\$LOG_FILE"
-          else
-            log_message "SUCCESS: Harbor jobservice restarted successfully"
-          fi
-        else
-          log_message "CRITICAL: Could not find jobservice container to restart"
-        fi
-      else
-        log_message "OK: Harbor jobservice is running normally"
-      fi
+      storage:
+        type: sqlite3
+        config:
+          file: /data/dex/dex.db
       
-      # Check jobservice queue depth (if accessible)
-      QUEUE_DEPTH=\$(docker-compose exec -T harbor-core redis-cli -h redis llen "jobservice_namespace:job_queue" 2>/dev/null || echo "N/A")
-      log_message "Jobservice queue depth: \$QUEUE_DEPTH"
+      web:
+        http: 0.0.0.0:5556
+        # tlsCert: /etc/dex/tls/tls.crt
+        # tlsKey: /etc/dex/tls/tls.key
       
-      # Memory usage check
-      JOBSERVICE_MEMORY=\$(docker stats --no-stream --format "table {{.Container}}\t{{.MemUsage}}" | grep jobservice || echo "N/A")
-      log_message "Jobservice memory usage: \$JOBSERVICE_MEMORY"
-      EOF
+      connectors:
+      - type: github
+        id: github
+        name: GitHub
+        config:
+          clientID: ${HARBOR_OIDC_CLIENT}
+          clientSecret: ${HARBOR_OIDC_SECRET}
+          redirectURI: https://dex.${RANCHER_DOMAIN}/callback
+          orgs:
+          - name: ${GITHUB_ORG:-dotcomrow}
+          teamNameField: slug
+          useLoginAsID: false
       
-      chmod +x /usr/local/bin/harbor-jobservice-monitor
+      oauth2:
+        skipApprovalScreen: true
+        alwaysShowLoginScreen: false
       
-      # Create systemd timer for jobservice monitoring
-      cat <<EOF > /etc/systemd/system/harbor-jobservice-monitor.service
+      staticClients:
+      - id: harbor
+        redirectURIs:
+        - 'https://harbor.${RANCHER_DOMAIN}/c/oidc/callback'
+        name: 'Harbor Registry'
+        secret: 'DEX_CLIENT_SECRET_PLACEHOLDER'
+      
+      enablePasswordDB: false
+      
+      logger:
+        level: info
+        format: json
+      DEXEOF
+      
+      # Replace placeholder with actual secret
+      sed -i "s/DEX_CLIENT_SECRET_PLACEHOLDER/$DEX_CLIENT_SECRET/" /opt/dex/config.yaml
+      
+      # Create dex user
+      useradd --system --shell /bin/false --home-dir /data/dex --create-home dex 2>/dev/null || true
+      chown -R dex:dex /data/dex /opt/dex
+      
+      # Create systemd service
+      cat > /etc/systemd/system/dex.service << 'DEXSVCEOF'
       [Unit]
-      Description=Harbor JobService Health Monitor
-      After=harbor.service
+      Description=Dex OIDC Identity Provider
+      Documentation=https://dexidp.io/docs/
+      After=network-online.target
+      Wants=network-online.target
       
       [Service]
-      Type=oneshot
-      ExecStart=/usr/local/bin/harbor-jobservice-monitor
-      User=root
-      EOF
-      
-      cat <<EOF > /etc/systemd/system/harbor-jobservice-monitor.timer
-      [Unit]
-      Description=Run Harbor JobService Health Monitor every 5 minutes
-      Requires=harbor-jobservice-monitor.service
-      
-      [Timer]
-      OnCalendar=*:0/5
-      RandomizedDelaySec=30
+      Type=simple
+      User=dex
+      Group=dex
+      ExecStart=/usr/local/bin/dex serve /opt/dex/config.yaml
+      Restart=on-failure
+      RestartSec=5
+      TimeoutStopSec=30
+      NoNewPrivileges=true
+      PrivateTmp=true
+      ProtectSystem=strict
+      ProtectHome=true
+      ReadWritePaths=/data/dex
+      CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+      AmbientCapabilities=CAP_NET_BIND_SERVICE
       
       [Install]
-      WantedBy=timers.target
-      EOF
+      WantedBy=multi-user.target
+      DEXSVCEOF
       
+      # Create Dex management script
+      cat > /usr/local/bin/dex-manage << 'DEXMGMTEOF'
+      #!/bin/bash
+      case "$1" in
+        start)
+          systemctl start dex
+          ;;
+        stop)
+          systemctl stop dex
+          ;;
+        restart)
+          systemctl restart dex
+          ;;
+        status)
+          systemctl status dex
+          ;;
+        logs)
+          journalctl -u dex -f
+          ;;
+        config)
+          cat /opt/dex/config.yaml
+          ;;
+        health)
+          curl -f http://localhost:5556/dex/healthz || echo "Dex health check failed"
+          ;;
+        *)
+          echo "Usage: $0 {start|stop|restart|status|logs|config|health}"
+          exit 1
+          ;;
+      esac
+      DEXMGMTEOF
+      
+      chmod +x /usr/local/bin/dex-manage
+      
+      # Start and enable Dex service
       systemctl daemon-reload
-      systemctl enable harbor-jobservice-monitor.timer
-      systemctl start harbor-jobservice-monitor.timer
+      systemctl enable dex
+      systemctl start dex
       
-      echo "✅ Harbor installation completed!"
-      echo "🌐 Harbor is available at: http://$HARBOR_HOST"
-      echo "🌐 External Harbor URL: https://harbor.${RANCHER_DOMAIN}"
-      echo "🔐 GitHub OAuth authentication configured automatically"
-      echo "👤 Default admin credentials (if OAuth fails): admin / Harbor12345"
-      echo "� GitHub OIDC Authentication configured"
-      echo "👤 GitHub Teams configured:"
-      echo "  - harbor_admins: Full system administrative access"
-      echo "  - harbor_users: Read-only access to proxy cache projects"
-      echo ""
-      echo "⚠️  IMPORTANT: After first GitHub OIDC login, disable the built-in admin account:"
-      echo "   1. Login via GitHub OIDC as a member of harbor_admins team"
-      echo "   2. Go to Administration > Users"
-      echo "   3. Disable the 'admin' user account"
-      echo ""
-      echo "🔧 Use 'harbor-manage' command to manage Harbor service"
-      echo ""
-      echo "📋 Proxy cache projects created:"
-      echo "  - dockerhub (Docker Hub): $HARBOR_HOST/dockerhub/"
-      echo "  - gcr (Google Container Registry): $HARBOR_HOST/gcr/"
-      echo "  - quay (Quay.io): $HARBOR_HOST/quay/"
-      echo "  - k8s-gcr (Kubernetes GCR): $HARBOR_HOST/k8s-gcr/"
-      echo "  - registry-k8s (Kubernetes Registry): $HARBOR_HOST/registry-k8s/"
-      echo ""
-      echo "🚀 Configure your Kubernetes cluster to use Harbor as pull-through cache:"
-      echo "  Example: docker pull $HARBOR_HOST/dockerhub/nginx:latest"
+      # Wait for Dex to start and verify
+      echo "⏳ Waiting for Dex to start..."
+      sleep 10
+      
+      # Health check
+      for i in {1..30}; do
+        if systemctl is-active --quiet dex && curl -f -s http://localhost:5556/dex/healthz >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider started successfully"
+          echo "🌐 Dex issuer: https://dex.${RANCHER_DOMAIN}"
+          echo "🔧 Use 'dex-manage' command to manage Dex service"
+          exit 0
+        fi
+        echo "Waiting for Dex to be ready... ($i/30)"
+        sleep 2
+      done
+      
+      echo "❌ Dex failed to start properly"
+      echo "Service status:"
+      systemctl status dex
+      echo "Logs:"
+      journalctl -u dex --lines=20
+      exit 1
 
   - path: /usr/local/bin/performance-tuning.sh
     permissions: '0755'
