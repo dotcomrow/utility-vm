@@ -859,9 +859,17 @@ write_files:
       # Replace placeholder with actual secret
       sed -i "s/DEX_CLIENT_SECRET_PLACEHOLDER/$DEX_CLIENT_SECRET/" /opt/dex/config.yaml
       
-      # Create dex user for file ownership
-      useradd --system --shell /bin/false --home-dir /data/dex --create-home dex 2>/dev/null || true
-      chown -R dex:dex /data/dex /opt/dex
+      # Create dex user and ensure proper directory permissions
+      useradd --system --shell /bin/false --home-dir /data/dex dex 2>/dev/null || true
+      
+      # Ensure directories exist with proper permissions for container access
+      mkdir -p /data/dex /opt/dex
+      chmod -R 755 /data/dex /opt/dex
+      
+      # Create the database file directory explicitly
+      mkdir -p /data/dex
+      touch /data/dex/dex.db 2>/dev/null || true
+      chmod 666 /data/dex/dex.db 2>/dev/null || true
       
       # Pull Dex Docker image
       DEX_IMAGE="ghcr.io/dexidp/dex:v2.38.0"
@@ -892,7 +900,8 @@ write_files:
           volumes:
             - /opt/dex/config.yaml:/etc/dex/config.yaml:ro
             - /data/dex:/data/dex
-          user: "1000:1000"  # Use dex user UID/GID
+          # Run as root to avoid permission issues with volume mounts
+          user: "0:0"
           command: ["dex", "serve", "/etc/dex/config.yaml"]
           networks:
             - dex-network
@@ -912,10 +921,16 @@ write_files:
       echo "$(date): Starting Dex container..."
       cd /opt/dex
       
+      # Debug: Check directory permissions before starting
+      echo "$(date): Checking /data/dex permissions:"
+      ls -la /data/dex/
+      
       if docker-compose up -d; then
         echo "✅ Dex container started successfully"
       else
         echo "❌ Failed to start Dex container"
+        echo "Docker logs:"
+        docker-compose logs
         exit 1
       fi
       
@@ -942,6 +957,10 @@ write_files:
         docker-compose ps
         echo "Container logs:"
         docker-compose logs
+        echo "Directory permissions:"
+        ls -la /data/dex/
+        echo "Config file:"
+        ls -la /opt/dex/config.yaml
         exit 1
       fi
         config:
