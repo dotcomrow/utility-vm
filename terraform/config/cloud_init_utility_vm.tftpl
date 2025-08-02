@@ -824,13 +824,6 @@ write_files:
       systemctl daemon-reload
       systemctl enable harbor
       
-      # Install docker-compose if not present
-      if ! command -v docker-compose &> /dev/null; then
-        echo "📦 Installing docker-compose..."
-        curl -L "https://github.com/docker/compose/releases/download/v2.24.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-        chmod +x /usr/local/bin/docker-compose
-      fi
-      
       # Create helper script for Harbor management
       cat <<EOF > /usr/local/bin/harbor-manage
       #!/bin/bash
@@ -1294,6 +1287,15 @@ write_files:
       sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
       sudo apt-get update -y
       DEBIAN_FRONTEND=noninteractive sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+
+      # Install docker-compose immediately after Docker
+      echo "📦 Installing docker-compose..."
+      curl -L "https://github.com/docker/compose/releases/download/v2.24.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+      chmod +x /usr/local/bin/docker-compose
+      
+      # Verify docker-compose installation
+      docker-compose --version
+      echo "✅ Docker and docker-compose installed successfully"
 
       # sudo mkdir -p /etc/systemd/system/docker.service.d
       # cat <<EOF | sudo tee /etc/systemd/system/docker.service.d/10-http-proxy.conf
