@@ -799,33 +799,17 @@ write_files:
       # Create directories
       mkdir -p /opt/dex /data/dex
       
-      # Download and install Dex with retry logic
+      # Deploy Dex as a Docker container
       cd /tmp
-      DEX_VERSION="v2.37.0"
-      echo "$(date): 📦 Downloading Dex $DEX_VERSION..."
       
-      # Retry mechanism for downloading Dex
-      for i in {1..5}; do
-        if wget -q "https://github.com/dexidp/dex/releases/download/$DEX_VERSION/dex-$DEX_VERSION-linux-amd64.tar.gz"; then
-          echo "✅ Dex download successful"
-          break
-        else
-          echo "⚠️  Dex download attempt $i failed, retrying in 10 seconds..."
-          sleep 10
-        fi
-        if [ $i -eq 5 ]; then
-          echo "❌ Failed to download Dex after 5 attempts"
-          exit 1
-        fi
-      done
+      echo "$(date): � Deploying Dex OIDC provider as Docker container..."
       
-      tar xzf "dex-$DEX_VERSION-linux-amd64.tar.gz"
-      cp "dex-$DEX_VERSION-linux-amd64/dex" /usr/local/bin/dex
-      chmod +x /usr/local/bin/dex
+      # Create directories for Dex data and config
+      mkdir -p /opt/dex /data/dex
       
       # Generate client secret for Harbor
       DEX_CLIENT_SECRET=$(openssl rand -hex 16)
-      echo "Generated Dex client secret for Harbor"
+      echo "$(date): Generated Dex client secret for Harbor"
       
       # Create Dex configuration
       cat > /opt/dex/config.yaml << 'DEXEOF'
@@ -875,99 +859,97 @@ write_files:
       # Replace placeholder with actual secret
       sed -i "s/DEX_CLIENT_SECRET_PLACEHOLDER/$DEX_CLIENT_SECRET/" /opt/dex/config.yaml
       
-      # Create dex user
+      # Create dex user for file ownership
       useradd --system --shell /bin/false --home-dir /data/dex --create-home dex 2>/dev/null || true
       chown -R dex:dex /data/dex /opt/dex
       
-      # Create systemd service
-      cat > /etc/systemd/system/dex.service << 'DEXSVCEOF'
-      [Unit]
-      Description=Dex OIDC Identity Provider
-      Documentation=https://dexidp.io/docs/
-      After=network-online.target
-      Wants=network-online.target
+      # Pull Dex Docker image
+      DEX_IMAGE="ghcr.io/dexidp/dex:v2.38.0"
+      echo "$(date): Pulling Dex Docker image: $DEX_IMAGE"
       
-      [Service]
-      Type=simple
-      User=dex
-      Group=dex
-      ExecStart=/usr/local/bin/dex serve /opt/dex/config.yaml
-      Restart=on-failure
-      RestartSec=5
-      TimeoutStopSec=30
-      NoNewPrivileges=true
-      PrivateTmp=true
-      ProtectSystem=strict
-      ProtectHome=true
-      ReadWritePaths=/data/dex
-      CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-      AmbientCapabilities=CAP_NET_BIND_SERVICE
-      
-      [Install]
-      WantedBy=multi-user.target
-      DEXSVCEOF
-      
-      # Create Dex management script
-      cat > /usr/local/bin/dex-manage << 'DEXMGMTEOF'
-      #!/bin/bash
-      case "$1" in
-        start)
-          systemctl start dex
-          ;;
-        stop)
-          systemctl stop dex
-          ;;
-        restart)
-          systemctl restart dex
-          ;;
-        status)
-          systemctl status dex
-          ;;
-        logs)
-          journalctl -u dex -f
-          ;;
-        config)
-          cat /opt/dex/config.yaml
-          ;;
-        health)
-          curl -f http://localhost:5556/dex/healthz || echo "Dex health check failed"
-          ;;
-        *)
-          echo "Usage: $0 {start|stop|restart|status|logs|config|health}"
+      if ! docker pull "$DEX_IMAGE"; then
+        echo "⚠️  Failed to pull $DEX_IMAGE, trying latest tag..."
+        DEX_IMAGE="ghcr.io/dexidp/dex:latest"
+        if ! docker pull "$DEX_IMAGE"; then
+          echo "❌ Failed to pull Dex Docker image"
           exit 1
-          ;;
-      esac
-      DEXMGMTEOF
+        fi
+      fi
       
-      chmod +x /usr/local/bin/dex-manage
+      echo "✅ Dex Docker image pulled successfully"
       
-      # Start and enable Dex service
-      systemctl daemon-reload
-      systemctl enable dex
-      systemctl start dex
+      # Create Docker Compose file for Dex
+      cat > /opt/dex/docker-compose.yml << 'DEXCOMPOSEEOF'
+      version: '3.8'
       
-      # Wait for Dex to start and verify
-      echo "⏳ Waiting for Dex to start..."
-      sleep 10
+      services:
+        dex:
+          image: ghcr.io/dexidp/dex:v2.38.0
+          container_name: dex
+          restart: unless-stopped
+          ports:
+            - "5556:5556"
+          volumes:
+            - /opt/dex/config.yaml:/etc/dex/config.yaml:ro
+            - /data/dex:/data/dex
+          user: "1000:1000"  # Use dex user UID/GID
+          command: ["dex", "serve", "/etc/dex/config.yaml"]
+          networks:
+            - dex-network
+          healthcheck:
+            test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5556/dex/healthz"]
+            interval: 30s
+            timeout: 10s
+            retries: 3
+            start_period: 40s
       
-      # Health check
+      networks:
+        dex-network:
+          driver: bridge
+      DEXCOMPOSEEOF
+      
+      # Start Dex container
+      echo "$(date): Starting Dex container..."
+      cd /opt/dex
+      
+      if docker-compose up -d; then
+        echo "✅ Dex container started successfully"
+      else
+        echo "❌ Failed to start Dex container"
+        exit 1
+      fi
+      
+      # Wait for Dex to be ready
+      echo "$(date): ⏳ Waiting for Dex to be ready..."
       for i in {1..30}; do
-        if systemctl is-active --quiet dex && curl -f -s http://localhost:5556/dex/healthz >/dev/null 2>&1; then
-          echo "✅ Dex OIDC provider started successfully"
-          echo "🌐 Dex issuer: https://dex.${RANCHER_DOMAIN}"
-          echo "🔧 Use 'dex-manage' command to manage Dex service"
-          exit 0
+        if curl -f -s http://localhost:5556/dex/healthz >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider is ready"
+          break
         fi
         echo "Waiting for Dex to be ready... ($i/30)"
         sleep 2
       done
       
-      echo "❌ Dex failed to start properly"
-      echo "Service status:"
-      systemctl status dex
-      echo "Logs:"
-      journalctl -u dex --lines=20
-      exit 1
+      # Verify Dex is running
+      if docker-compose ps | grep -q "Up"; then
+        echo "✅ Dex container is running successfully"
+        echo "🌐 Dex issuer: https://dex.${RANCHER_DOMAIN}"
+        echo "🔧 Use 'cd /opt/dex && docker-compose logs -f' to view logs"
+        echo "🔧 Use 'cd /opt/dex && docker-compose restart' to restart Dex"
+      else
+        echo "❌ Dex container failed to start properly"
+        echo "Container status:"
+        docker-compose ps
+        echo "Container logs:"
+        docker-compose logs
+        exit 1
+      fi
+        config:
+          file: /data/dex/dex.db
+      
+
+      
+
 
   - path: /usr/local/bin/performance-tuning.sh
     permissions: '0755'
@@ -1617,7 +1599,6 @@ write_files:
       harbor-manage status 2>/dev/null || echo "Harbor not available"
 
 runcmd:
-  - systemctl daemon-reexec
   - systemctl daemon-reload
   - systemctl enable initial-setup.service
   - systemctl start initial-setup.service
