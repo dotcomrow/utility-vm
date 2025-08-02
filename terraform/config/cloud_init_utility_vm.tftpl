@@ -525,7 +525,7 @@ write_files:
       echo "🔧 Configuring Harbor as pull-through cache..."
       
       # Create proxy cache projects for common registries
-      HARBOR_HOST="utility-node.internal.lan"
+      HARBOR_HOST="localhost"
       HARBOR_URL="http://$HARBOR_HOST"
       export HARBOR_USER=${HARBOR_USER}
       export HARBOR_PASS=${HARBOR_PASS}
