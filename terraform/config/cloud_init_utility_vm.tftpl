@@ -595,11 +595,20 @@ write_files:
       # Configure GitHub OAuth authentication automatically
       echo "🔧 Configuring GitHub OAuth authentication..."
       
-      # Wait for Harbor to be fully ready before configuring OAuth
-      sleep 15
-      
-      # GitHub OAuth configuration via Harbor API
-      echo "Setting up GitHub OAuth with Harbor API..."
+      # Verify environment variables are set
+      if [ -z "${HARBOR_OIDC_CLIENT}" ] || [ -z "${HARBOR_OIDC_SECRET}" ]; then
+        echo "❌ GitHub OAuth credentials not provided (HARBOR_OIDC_CLIENT or HARBOR_OIDC_SECRET missing)"
+        echo "⚠️  Keeping database authentication mode"
+      else
+        echo "✅ GitHub OAuth credentials found"
+        echo "🔧 Client ID: ${HARBOR_OIDC_CLIENT}"
+        echo "🔧 Using endpoint: https://github.com"
+        
+        # Wait for Harbor to be fully ready before configuring OAuth
+        sleep 15
+        
+        # GitHub OAuth configuration via Harbor API
+        echo "Setting up GitHub OAuth with Harbor API..."
       
       # Apply GitHub OAuth configuration to Harbor
       OAUTH_RESPONSE=$(curl -s -w "\\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \\
@@ -608,7 +617,7 @@ write_files:
         -d '{
           "auth_mode": "oidc_auth",
           "oidc_name": "GitHub",
-          "oidc_endpoint": "https://github.com/login/oauth/authorize",
+          "oidc_endpoint": "https://github.com",
           "oidc_client_id": "'${HARBOR_OIDC_CLIENT}'",
           "oidc_client_secret": "'${HARBOR_OIDC_SECRET}'",
           "oidc_scope": "read:user,user:email",
@@ -642,8 +651,8 @@ write_files:
         fi
       else
         echo "❌ Failed to configure GitHub OAuth (HTTP $OAUTH_HTTP_CODE)"
-        echo "Response: $OAUTH_RESPONSE_BODY"
-        echo "Attempting alternative configuration with simplified settings..."
+        echo "❌ Error response: $OAUTH_RESPONSE_BODY"
+        echo "🔧 Attempting alternative configuration with simplified settings..."
         
         # Alternative: Configure with minimal OIDC settings
         RETRY_RESPONSE=$(curl -s -w "\\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \\
@@ -948,7 +957,7 @@ write_files:
       
       echo "✅ Harbor installation completed!"
       echo "🌐 Harbor is available at: http://$HARBOR_HOST"
-      echo "🌐 External Harbor URL: https://harbor.suncoast.systems"
+      echo "🌐 External Harbor URL: https://harbor.${RANCHER_DOMAIN}"
       echo "🔐 GitHub OAuth authentication configured automatically"
       echo "👤 Default admin credentials (if OAuth fails): admin / Harbor12345"
       echo "� GitHub OIDC Authentication configured"
