@@ -796,6 +796,19 @@ write_files:
       
       echo "$(date): 🔧 Installing and configuring Dex OIDC provider..."
       
+      # Validate required environment variables
+      if [ -z "${HARBOR_OIDC_CLIENT}" ] || [ -z "${HARBOR_OIDC_SECRET}" ] || [ -z "${RANCHER_DOMAIN}" ] || [ -z "${GITHUB_ORG}" ]; then
+        echo "❌ Missing required environment variables for Dex:"
+        echo "  HARBOR_OIDC_CLIENT: ${HARBOR_OIDC_CLIENT}"
+        echo "  HARBOR_OIDC_SECRET: ${HARBOR_OIDC_SECRET}"
+        echo "  RANCHER_DOMAIN: ${RANCHER_DOMAIN}"
+        echo "  GITHUB_ORG: ${GITHUB_ORG}"
+        echo "⚠️  Skipping Dex installation due to missing configuration"
+        exit 1
+      fi
+      
+      echo "$(date): ✅ Environment variables validated"
+      
       # Create directories
       mkdir -p /opt/dex /data/dex
       
@@ -812,7 +825,7 @@ write_files:
       echo "$(date): Generated Dex client secret for Harbor"
       
       # Create Dex configuration
-      cat > /opt/dex/config.yaml << 'DEXEOF'
+      cat > /opt/dex/config.yaml << DEXEOF
       issuer: https://dex.${RANCHER_DOMAIN}
       
       storage:
@@ -858,6 +871,14 @@ write_files:
       
       # Replace placeholder with actual secret
       sed -i "s/DEX_CLIENT_SECRET_PLACEHOLDER/$DEX_CLIENT_SECRET/" /opt/dex/config.yaml
+      
+      # Debug: Show final configuration (redacted)
+      echo "$(date): Dex configuration summary:"
+      echo "  - Issuer: $(grep '^issuer:' /opt/dex/config.yaml || echo 'NOT FOUND')"
+      echo "  - GitHub Client ID: $(grep 'clientID:' /opt/dex/config.yaml | sed 's/.*clientID: *//' || echo 'NOT FOUND')"
+      echo "  - GitHub Org: $(grep 'name:.*GITHUB_ORG' /opt/dex/config.yaml || echo 'NOT FOUND')"
+      echo "  - Harbor redirect URI: $(grep 'harbor.*callback' /opt/dex/config.yaml || echo 'NOT FOUND')"
+      echo "  - Storage file: $(grep 'file:' /opt/dex/config.yaml || echo 'NOT FOUND')"
       
       # Create dex user and ensure proper directory permissions
       useradd --system --shell /bin/false --home-dir /data/dex dex 2>/dev/null || true
@@ -934,14 +955,27 @@ write_files:
         exit 1
       fi
       
-      # Wait for Dex to be ready
+      # Wait for Dex to be ready - infinite loop until success
       echo "$(date): ⏳ Waiting for Dex to be ready..."
-      for i in {1..30}; do
+      attempt=1
+      while true; do
         if curl -f -s http://localhost:5556/dex/healthz >/dev/null 2>&1; then
-          echo "✅ Dex OIDC provider is ready"
+          echo "✅ Dex OIDC provider is ready (attempt $attempt)"
           break
         fi
-        echo "Waiting for Dex to be ready... ($i/30)"
+        echo "Waiting for Dex to be ready... (attempt $attempt)"
+        if [ $((attempt % 10)) -eq 0 ]; then
+          echo "🔧 Current container status (attempt $attempt):"
+          docker-compose ps || true
+          echo "🔧 Latest container logs:"
+          docker-compose logs --tail=10 || true
+          echo "🔧 Checking if container is still running..."
+          if ! docker-compose ps | grep -q "Up"; then
+            echo "❌ Container is no longer running! Breaking out of wait loop."
+            break
+          fi
+        fi
+        attempt=$((attempt + 1))
         sleep 2
       done
       
@@ -955,12 +989,16 @@ write_files:
         echo "🔧 Health endpoint: http://localhost:5556/dex/healthz"
         echo "🔧 Use 'cd /opt/dex && docker-compose logs -f' to view logs"
         echo "🔧 Use 'cd /opt/dex && docker-compose restart' to restart Dex"
-        return 0
+        exit 0
       elif [ "$CONTAINER_RUNNING" -gt 0 ] && [ "$HTTP_HEALTHY" = "0" ]; then
         echo "⚠️  Dex container is running but HTTP endpoint not responding"
         echo "Container may still be starting up..."
         echo "🔧 Check logs with: cd /opt/dex && docker-compose logs"
-        return 0  # Don't fail completely, Harbor can still work without Dex
+        echo "🔧 Container status:"
+        docker-compose ps
+        echo "🔧 Container logs (last 20 lines):"
+        docker-compose logs --tail=20
+        exit 0  # Don't fail completely, Harbor can still work without Dex
       else
         echo "❌ Dex container failed to start properly"
         echo "Container status:"
@@ -971,7 +1009,7 @@ write_files:
         ls -la /data/dex/
         echo "Config file:"
         ls -la /opt/dex/config.yaml
-        return 1  # Return error code but don't exit script
+        exit 1  # Exit with error code
       fi
 
   - path: /usr/local/bin/performance-tuning.sh
