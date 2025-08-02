@@ -984,9 +984,9 @@ write_files:
           echo "🔧 Latest container logs:"
           docker-compose logs --tail=10 || true
           echo "🔧 Testing endpoints manually:"
-          echo "  - /dex/healthz: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:5556/dex/healthz 2>/dev/null || echo 'failed')"
-          echo "  - / (root): $(curl -s -o /dev/null -w '%{http_code}' http://localhost:5556/ 2>/dev/null || echo 'failed')"
-          echo "  - /.well-known/openid_configuration: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:5556/.well-known/openid_configuration 2>/dev/null || echo 'failed')"
+          echo "  - /dex/healthz: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/dex/healthz 2>/dev/null || echo 'failed')"
+          echo "  - / (root): $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/ 2>/dev/null || echo 'failed')"
+          echo "  - /.well-known/openid_configuration: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/.well-known/openid_configuration 2>/dev/null || echo 'failed')"
           echo "🔧 Checking if container is still running..."
           if ! docker-compose ps | grep -q "Up"; then
             echo "❌ Container is no longer running! Breaking out of wait loop."
