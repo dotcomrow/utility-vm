@@ -79,6 +79,18 @@ write_files:
       
       echo "$(date): Starting initial setup..."
       
+      # Function to run commands with error handling
+      run_with_error_handling() {
+        local cmd="$1"
+        local description="$2"
+        echo "$(date): $description..."
+        if eval "$cmd"; then
+          echo "$(date): ✅ $description completed successfully"
+        else
+          echo "$(date): ⚠️  $description failed, but continuing..."
+        fi
+      }
+      
       # export HTTP_PROXY=http://10.0.0.10:3128
       # export HTTPS_PROXY=http://10.0.0.10:3128
       # export NO_PROXY=127.0.0.1,localhost,10.0.0.0/24,10.96.0.0/12
@@ -103,7 +115,11 @@ write_files:
       systemctl enable setup-hosts-dns.service
       systemctl start setup-hosts-dns.service
       echo "$(date): Setting up utility services..."
-      /usr/local/bin/setup-utility.sh
+      if /usr/local/bin/setup-utility.sh; then
+        echo "$(date): ✅ Utility services setup completed successfully"
+      else
+        echo "$(date): ⚠️  Utility services setup failed, but system is functional"
+      fi
 
       systemctl enable qemu-guest-agent
       systemctl start qemu-guest-agent
@@ -191,11 +207,12 @@ write_files:
       cp harbor.yml.tmpl harbor.yml
       
       # Configure Harbor with SSL disabled
-      cat <<EOF > /opt/harbor/harbor.yml
+      HARBOR_HOSTNAME="$(hostname).internal.lan"
+      cat > /opt/harbor/harbor.yml << 'HARBOREOF'
       # Configuration file of Harbor
       
       # The IP address or hostname to access admin UI and registry service.
-      hostname: $(hostname).internal.lan
+      hostname: HOSTNAME_PLACEHOLDER
       
       # http related config
       http:
@@ -443,7 +460,10 @@ write_files:
         enabled: false
         # default keep cache for one day.
         expire_hours: 24
-      EOF
+      HARBOREOF
+      
+      # Replace the hostname placeholder
+      sed -i "s/HOSTNAME_PLACEHOLDER/$HARBOR_HOSTNAME/g" /opt/harbor/harbor.yml
       
       # Create required directories for Harbor logging on dedicated disk
       mkdir -p /data/harbor/logs/jobs
@@ -639,46 +659,50 @@ write_files:
       # Deploy Dex OIDC provider if GitHub OAuth credentials are provided
       if [ -n "${HARBOR_OIDC_CLIENT}" ] && [ -n "${HARBOR_OIDC_SECRET}" ]; then
         echo "🔧 Deploying Dex OIDC provider for GitHub OAuth integration..."
-        /usr/local/bin/setup-dex.sh
-        
-        # Configure Harbor to use Dex OIDC
-        echo "🔧 Configuring Harbor to use Dex OIDC..."
-        sleep 10  # Wait for Dex to be fully ready
-        
-        # Get the Dex client secret that was generated
-        DEX_CLIENT_SECRET=$(grep "secret:" /opt/dex/config.yaml | sed "s/.*secret: '//" | sed "s/'.*//")
-        
-        # Configure Harbor OIDC settings
-        OIDC_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
-          -H "Content-Type: application/json" \
-          -u "${HARBOR_USER}:${HARBOR_PASS}" \
-          -d "{
-            \"auth_mode\": \"oidc_auth\",
-            \"oidc_name\": \"GitHub via Dex\",
-            \"oidc_endpoint\": \"https://dex.${RANCHER_DOMAIN}\",
-            \"oidc_client_id\": \"harbor\",
-            \"oidc_client_secret\": \"$DEX_CLIENT_SECRET\",
-            \"oidc_scope\": \"openid email profile groups\",
-            \"oidc_verify_cert\": false,
-            \"oidc_auto_onboard\": true,
-            \"oidc_user_claim\": \"email\",
-            \"oidc_groups_claim\": \"groups\"
-          }")
-        
-        OIDC_HTTP_CODE=$(echo "$OIDC_CONFIG_RESPONSE" | tail -n1)
-        OIDC_RESPONSE_BODY=$(echo "$OIDC_CONFIG_RESPONSE" | head -n -1)
-        
-        if [ "$OIDC_HTTP_CODE" = "200" ]; then
-          echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
-          echo "🔗 GitHub OIDC Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
-          echo "👤 Users can now login with their GitHub accounts"
+        if /usr/local/bin/setup-dex.sh; then
+          echo "✅ Dex deployment successful"
+          
+          # Configure Harbor to use Dex OIDC
+          echo "🔧 Configuring Harbor to use Dex OIDC..."
+          sleep 10  # Wait for Dex to be fully ready
+          
+          # Get the Dex client secret that was generated
+          DEX_CLIENT_SECRET=$(grep "secret:" /opt/dex/config.yaml | sed "s/.*secret: '//" | sed "s/'.*//")
+          
+          # Configure Harbor OIDC settings
+          OIDC_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
+            -H "Content-Type: application/json" \
+            -u "${HARBOR_USER}:${HARBOR_PASS}" \
+            -d "{
+              \"auth_mode\": \"oidc_auth\",
+              \"oidc_name\": \"GitHub via Dex\",
+              \"oidc_endpoint\": \"https://dex.${RANCHER_DOMAIN}\",
+              \"oidc_client_id\": \"harbor\",
+              \"oidc_client_secret\": \"$DEX_CLIENT_SECRET\",
+              \"oidc_scope\": \"openid email profile groups\",
+              \"oidc_verify_cert\": false,
+              \"oidc_auto_onboard\": true,
+              \"oidc_user_claim\": \"email\",
+              \"oidc_groups_claim\": \"groups\"
+            }")
+          
+          OIDC_HTTP_CODE=$(echo "$OIDC_CONFIG_RESPONSE" | tail -n1)
+          OIDC_RESPONSE_BODY=$(echo "$OIDC_CONFIG_RESPONSE" | head -n -1)
+          
+          if [ "$OIDC_HTTP_CODE" = "200" ]; then
+            echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
+            echo "🔗 GitHub OIDC Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+            echo "👤 Users can now login with their GitHub accounts"
+          else
+            echo "⚠️  Harbor OIDC configuration failed (HTTP $OIDC_HTTP_CODE)"
+            echo "Response: $OIDC_RESPONSE_BODY"
+            echo "Harbor will continue using database authentication"
+          fi
+          
+          echo "✅ GitHub OAuth authentication via Dex configured successfully"
         else
-          echo "⚠️  Harbor OIDC configuration failed (HTTP $OIDC_HTTP_CODE)"
-          echo "Response: $OIDC_RESPONSE_BODY"
-          echo "Harbor will continue using database authentication"
+          echo "⚠️  Dex deployment failed, Harbor will use database authentication"
         fi
-        
-        echo "✅ GitHub OAuth authentication via Dex configured successfully"
       else
         echo "ℹ️  No GitHub OAuth credentials provided"
         echo "ℹ️  Harbor using database authentication (admin/Harbor12345)"
@@ -768,16 +792,33 @@ write_files:
     content: |
       #!/bin/bash
       set -e
-      echo "🔧 Installing and configuring Dex OIDC provider..."
+      exec > >(tee -a /var/log/setup-dex.log) 2>&1  # Log all output
+      
+      echo "$(date): 🔧 Installing and configuring Dex OIDC provider..."
       
       # Create directories
       mkdir -p /opt/dex /data/dex
       
-      # Download and install Dex
+      # Download and install Dex with retry logic
       cd /tmp
       DEX_VERSION="v2.37.0"
-      echo "📦 Downloading Dex $DEX_VERSION..."
-      wget -q "https://github.com/dexidp/dex/releases/download/$DEX_VERSION/dex-$DEX_VERSION-linux-amd64.tar.gz"
+      echo "$(date): 📦 Downloading Dex $DEX_VERSION..."
+      
+      # Retry mechanism for downloading Dex
+      for i in {1..5}; do
+        if wget -q "https://github.com/dexidp/dex/releases/download/$DEX_VERSION/dex-$DEX_VERSION-linux-amd64.tar.gz"; then
+          echo "✅ Dex download successful"
+          break
+        else
+          echo "⚠️  Dex download attempt $i failed, retrying in 10 seconds..."
+          sleep 10
+        fi
+        if [ $i -eq 5 ]; then
+          echo "❌ Failed to download Dex after 5 attempts"
+          exit 1
+        fi
+      done
+      
       tar xzf "dex-$DEX_VERSION-linux-amd64.tar.gz"
       cp "dex-$DEX_VERSION-linux-amd64/dex" /usr/local/bin/dex
       chmod +x /usr/local/bin/dex
