@@ -74,6 +74,11 @@ write_files:
     permissions: '0755'
     content: |
       #!/bin/bash
+      set -e  # Exit on any error
+      exec > >(tee -a /var/log/initial-setup.log) 2>&1  # Log all output
+      
+      echo "$(date): Starting initial setup..."
+      
       # export HTTP_PROXY=http://10.0.0.10:3128
       # export HTTPS_PROXY=http://10.0.0.10:3128
       # export NO_PROXY=127.0.0.1,localhost,10.0.0.0/24,10.96.0.0/12
@@ -85,25 +90,35 @@ write_files:
 
       # update-ca-certificates
       systemctl daemon-reload
+      echo "$(date): Running performance tuning..."
       /usr/local/bin/performance-tuning.sh
       sysctl --system
       update-grub
+      echo "$(date): Disabling swap..."
       /usr/local/bin/disable-swap.sh
+      echo "$(date): Setting up Docker..."
       /usr/local/bin/setup-docker.sh
+      echo "$(date): Setting up Fluent Bit..."
       /usr/local/bin/setup-fluentbit.sh
       systemctl enable setup-hosts-dns.service
       systemctl start setup-hosts-dns.service
+      echo "$(date): Setting up utility services..."
       /usr/local/bin/setup-utility.sh
 
       systemctl enable qemu-guest-agent
       systemctl start qemu-guest-agent
       systemctl daemon-reload
+      
+      echo "$(date): Initial setup completed successfully!"
 
   - path: /usr/local/bin/setup-utility.sh
     permissions: '0755'
     content: |
       #!/bin/bash
-      echo "🔧 Setting up utility VM..."
+      set -e  # Exit on any error
+      exec > >(tee -a /var/log/setup-utility.log) 2>&1  # Log all output
+      
+      echo "$(date): 🔧 Setting up utility VM..."
 
       # Setup dedicated Harbor disk
       echo "💾 Setting up dedicated Harbor disk..."
@@ -745,10 +760,8 @@ write_files:
       HARBORMGMTEOF
       
       chmod +x /usr/local/bin/harbor-manage
-    else
-      echo "❌ Harbor installation failed!" | tee -a /var/log/harbor-install.log
-      exit 1  
-    fi
+      
+      echo "✅ Harbor setup completed successfully"
 
   - path: /usr/local/bin/setup-dex.sh
     permissions: '0755'
@@ -1221,13 +1234,28 @@ write_files:
     permissions: '0755'
     content: |
       #!/bin/bash
-      until curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -; do sleep 5; done
+      set -e  # Exit on any error
+      exec > >(tee -a /var/log/setup-docker.log) 2>&1  # Log all output
+      
+      echo "$(date): Setting up Docker..."
+      
+      # Retry mechanism for downloading Docker GPG key
+      for i in {1..5}; do
+        if curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -; then
+          echo "✅ Docker GPG key added successfully"
+          break
+        else
+          echo "⚠️  Attempt $i failed, retrying in 10 seconds..."
+          sleep 10
+        fi
+      done
+      
       sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
       sudo apt-get update -y
       DEBIAN_FRONTEND=noninteractive sudo apt-get install -y docker-ce docker-ce-cli containerd.io
 
       # Install docker-compose immediately after Docker
-      echo "📦 Installing docker-compose..."
+      echo "$(date): 📦 Installing docker-compose..."
       curl -L "https://github.com/docker/compose/releases/download/v2.24.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
       chmod +x /usr/local/bin/docker-compose
       
@@ -1498,6 +1526,55 @@ write_files:
       systemctl daemon-reload
       systemctl enable td-agent-bit
       systemctl restart td-agent-bit
+
+  - path: /usr/local/bin/debug-cloud-init.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      echo "=== Cloud-Init Debug Information ==="
+      echo
+      echo "Cloud-Init Status:"
+      cloud-init status --long
+      echo
+      echo "Cloud-Init Logs (last 50 lines):"
+      tail -n 50 /var/log/cloud-init.log
+      echo
+      echo "Cloud-Init Output Logs (last 50 lines):"
+      tail -n 50 /var/log/cloud-init-output.log
+      echo
+      echo "Initial Setup Log:"
+      if [ -f /var/log/initial-setup.log ]; then
+        tail -n 50 /var/log/initial-setup.log
+      else
+        echo "No initial setup log found"
+      fi
+      echo
+      echo "Setup Utility Log:"
+      if [ -f /var/log/setup-utility.log ]; then
+        tail -n 50 /var/log/setup-utility.log
+      else
+        echo "No setup utility log found"
+      fi
+      echo
+      echo "Setup Docker Log:"
+      if [ -f /var/log/setup-docker.log ]; then
+        tail -n 50 /var/log/setup-docker.log
+      else
+        echo "No setup docker log found"
+      fi
+      echo
+      echo "SSH Key Status:"
+      echo "Ubuntu user SSH keys:"
+      cat /home/ubuntu/.ssh/authorized_keys 2>/dev/null || echo "No SSH keys found"
+      echo
+      echo "System Services Status:"
+      systemctl status initial-setup.service
+      echo
+      echo "Docker Status:"
+      systemctl status docker 2>/dev/null || echo "Docker not installed/running"
+      echo
+      echo "Harbor Status:"
+      harbor-manage status 2>/dev/null || echo "Harbor not available"
 
 runcmd:
   - systemctl daemon-reexec
