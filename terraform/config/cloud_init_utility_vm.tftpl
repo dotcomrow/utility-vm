@@ -1190,7 +1190,6 @@ write_files:
       WantedBy=multi-user.target
       EOF
 
-      sudo systemctl daemon-reexec
       sudo systemctl enable sysctl-ensure.service
 
   - path: /etc/systemd/system/setup-hosts-dns.service
