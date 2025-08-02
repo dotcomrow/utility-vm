@@ -959,16 +959,34 @@ write_files:
       echo "$(date): ⏳ Waiting for Dex to be ready..."
       attempt=1
       while true; do
-        if curl -f -s http://localhost:5556/dex/healthz >/dev/null 2>&1; then
-          echo "✅ Dex OIDC provider is ready (attempt $attempt)"
+        # Check Docker health status first
+        if docker-compose ps | grep -q "healthy"; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - Docker health check passed"
           break
         fi
+        
+        # First try the health endpoint
+        if curl -f -s http://localhost:5556/dex/healthz >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - healthz endpoint responding"
+          break
+        fi
+        
+        # If healthz fails, try the main endpoint as fallback
+        if curl -f -s http://localhost:5556/ >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - main endpoint responding"
+          break
+        fi
+        
         echo "Waiting for Dex to be ready... (attempt $attempt)"
         if [ $((attempt % 10)) -eq 0 ]; then
           echo "🔧 Current container status (attempt $attempt):"
           docker-compose ps || true
           echo "🔧 Latest container logs:"
           docker-compose logs --tail=10 || true
+          echo "🔧 Testing endpoints manually:"
+          echo "  - /dex/healthz: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:5556/dex/healthz 2>/dev/null || echo 'failed')"
+          echo "  - / (root): $(curl -s -o /dev/null -w '%{http_code}' http://localhost:5556/ 2>/dev/null || echo 'failed')"
+          echo "  - /.well-known/openid_configuration: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:5556/.well-known/openid_configuration 2>/dev/null || echo 'failed')"
           echo "🔧 Checking if container is still running..."
           if ! docker-compose ps | grep -q "Up"; then
             echo "❌ Container is no longer running! Breaking out of wait loop."
