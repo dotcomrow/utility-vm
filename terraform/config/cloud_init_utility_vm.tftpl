@@ -945,12 +945,22 @@ write_files:
         sleep 2
       done
       
-      # Verify Dex is running
-      if docker-compose ps | grep -q "Up"; then
-        echo "✅ Dex container is running successfully"
+      # Final health check - verify both container and HTTP endpoint
+      CONTAINER_RUNNING=$(docker-compose ps | grep -c "Up" || echo "0")
+      HTTP_HEALTHY=$(curl -f -s http://localhost:5556/dex/healthz >/dev/null 2>&1 && echo "1" || echo "0")
+      
+      if [ "$CONTAINER_RUNNING" -gt 0 ] && [ "$HTTP_HEALTHY" = "1" ]; then
+        echo "✅ Dex OIDC provider is fully operational"
         echo "🌐 Dex issuer: https://dex.${RANCHER_DOMAIN}"
+        echo "🔧 Health endpoint: http://localhost:5556/dex/healthz"
         echo "🔧 Use 'cd /opt/dex && docker-compose logs -f' to view logs"
         echo "🔧 Use 'cd /opt/dex && docker-compose restart' to restart Dex"
+        return 0
+      elif [ "$CONTAINER_RUNNING" -gt 0 ] && [ "$HTTP_HEALTHY" = "0" ]; then
+        echo "⚠️  Dex container is running but HTTP endpoint not responding"
+        echo "Container may still be starting up..."
+        echo "🔧 Check logs with: cd /opt/dex && docker-compose logs"
+        return 0  # Don't fail completely, Harbor can still work without Dex
       else
         echo "❌ Dex container failed to start properly"
         echo "Container status:"
@@ -961,14 +971,8 @@ write_files:
         ls -la /data/dex/
         echo "Config file:"
         ls -la /opt/dex/config.yaml
-        exit 1
+        return 1  # Return error code but don't exit script
       fi
-        config:
-          file: /data/dex/dex.db
-      
-
-      
-
 
   - path: /usr/local/bin/performance-tuning.sh
     permissions: '0755'
