@@ -796,7 +796,7 @@ write_files:
           clientSecret: ${HARBOR_OIDC_SECRET}
           redirectURI: https://dex.${RANCHER_DOMAIN}/callback
           orgs:
-          - name: ${GITHUB_ORG:-dotcomrow}
+          - name: ${GITHUB_ORG}
           teamNameField: slug
           useLoginAsID: false
       
