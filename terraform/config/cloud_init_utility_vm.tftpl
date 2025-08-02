@@ -826,7 +826,7 @@ write_files:
       
       # Create Dex configuration
       cat > /opt/dex/config.yaml << DEXEOF
-      issuer: https://dex.${RANCHER_DOMAIN}
+      issuer: http://localhost:5556
       
       storage:
         type: sqlite3
@@ -845,7 +845,7 @@ write_files:
         config:
           clientID: ${HARBOR_OIDC_CLIENT}
           clientSecret: ${HARBOR_OIDC_SECRET}
-          redirectURI: https://dex.${RANCHER_DOMAIN}/callback
+          redirectURI: http://localhost:5556/callback
           orgs:
           - name: ${GITHUB_ORG}
           teamNameField: slug
@@ -965,13 +965,31 @@ write_files:
           break
         fi
         
-        # First try the health endpoint
+        # Try the health endpoint with /dex prefix (most likely correct)
         if curl -f -s http://localhost:5556/dex/healthz >/dev/null 2>&1; then
-          echo "✅ Dex OIDC provider is ready (attempt $attempt) - healthz endpoint responding"
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - /dex/healthz endpoint responding"
           break
         fi
         
-        # If healthz fails, try the main endpoint as fallback
+        # Try health endpoint without prefix
+        if curl -f -s http://localhost:5556/healthz >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - /healthz endpoint responding"
+          break
+        fi
+        
+        # Try the OIDC discovery endpoint (this should definitely exist)
+        if curl -f -s http://localhost:5556/.well-known/openid_configuration >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - OIDC discovery endpoint responding"
+          break
+        fi
+        
+        # Try some alternative endpoint patterns based on different Dex configurations
+        if curl -f -s http://localhost:5556/auth >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - /auth endpoint responding"
+          break
+        fi
+        
+        # Fallback to basic connectivity test
         if curl -f -s http://localhost:5556/ >/dev/null 2>&1; then
           echo "✅ Dex OIDC provider is ready (attempt $attempt) - main endpoint responding"
           break
@@ -983,10 +1001,23 @@ write_files:
           docker-compose ps || true
           echo "🔧 Latest container logs:"
           docker-compose logs --tail=10 || true
+          echo "🔧 Checking container processes:"
+          docker exec $(docker ps -q --filter "name=dex") ps aux 2>/dev/null || echo "Could not check processes"
+          echo "🔧 Checking listening ports inside container:"
+          docker exec $(docker ps -q --filter "name=dex") netstat -tlnp 2>/dev/null || echo "Could not check ports"
           echo "🔧 Testing endpoints manually:"
           echo "  - /dex/healthz: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/dex/healthz 2>/dev/null || echo 'failed')"
+          echo "  - /healthz: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/healthz 2>/dev/null || echo 'failed')"
           echo "  - / (root): $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/ 2>/dev/null || echo 'failed')"
+          echo "  - /dex/.well-known/openid_configuration: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/dex/.well-known/openid_configuration 2>/dev/null || echo 'failed')"
           echo "  - /.well-known/openid_configuration: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/.well-known/openid_configuration 2>/dev/null || echo 'failed')"
+          echo "  - /dex/auth: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/dex/auth 2>/dev/null || echo 'failed')"
+          echo "🔧 Testing some additional potential endpoints:"
+          echo "  - /api/v1/health: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/api/v1/health 2>/dev/null || echo 'failed')"
+          echo "  - /health: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/health 2>/dev/null || echo 'failed')"
+          echo "  - /auth: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/auth 2>/dev/null || echo 'failed')"
+          echo "🔧 Check if Dex is responding with any content at all:"
+          echo "  Raw response from /: $(curl -s http://localhost:5556/ 2>/dev/null | head -c 200 || echo 'no response')"
           echo "🔧 Checking if container is still running..."
           if ! docker-compose ps | grep -q "Up"; then
             echo "❌ Container is no longer running! Breaking out of wait loop."
