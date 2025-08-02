@@ -683,6 +683,7 @@ write_files:
             -d '{"auth_mode": "db_auth"}' || true
         fi
       fi
+      fi
       
       # Create user groups for GitHub teams
       echo "👥 Creating user groups for GitHub teams..."
@@ -975,7 +976,6 @@ write_files:
       echo ""
       echo "🚀 Configure your Kubernetes cluster to use Harbor as pull-through cache:"
       echo "  Example: docker pull $HARBOR_HOST/dockerhub/nginx:latest"
-      
 
   - path: /usr/local/bin/performance-tuning.sh
     permissions: '0755'
