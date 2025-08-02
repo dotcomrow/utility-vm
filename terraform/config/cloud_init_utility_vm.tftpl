@@ -458,8 +458,8 @@ write_files:
       done
       
       # Check jobservice specifically
-      JOBSERVICE_STATUS=$(docker-compose ps harbor-jobservice | grep "Up" || echo "")
-      if [ -z "$JOBSERVICE_STATUS" ]; then
+      JOBSERVICE_STATUS=$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
+      if [ "$JOBSERVICE_STATUS" -eq 0 ]; then
         echo "⚠️  Jobservice not running properly, restarting Harbor..."
         docker-compose down
         sleep 10
@@ -467,13 +467,18 @@ write_files:
         sleep 30
         
         # Verify jobservice again
-        RETRY_STATUS=$(docker-compose ps harbor-jobservice | grep "Up" || echo "")
-        if [ -z "$RETRY_STATUS" ]; then
+        RETRY_STATUS=$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
+        if [ "$RETRY_STATUS" -eq 0 ]; then
           echo "❌ Jobservice still failing, checking logs..."
-          docker-compose logs harbor-jobservice
+          docker-compose logs | grep jobservice
           echo "Attempting jobservice container restart..."
-          docker-compose restart harbor-jobservice
-          sleep 15
+          JOBSERVICE_CONTAINER=$(docker ps -a --filter "name=jobservice" --format "{{.Names}}" | head -1)
+          if [ ! -z "$JOBSERVICE_CONTAINER" ]; then
+            docker restart "$JOBSERVICE_CONTAINER"
+            sleep 15
+          else
+            echo "❌ Could not find jobservice container to restart"
+          fi
         else
           echo "✅ Jobservice recovered after restart"
         fi
@@ -837,18 +842,33 @@ write_files:
           ;;
         jobservice-restart)
           echo "Restarting Harbor jobservice..."
-          docker-compose restart harbor-jobservice
-          sleep 10
-          docker-compose ps harbor-jobservice
+          JOBSERVICE_CONTAINER=$(docker ps -a --filter "name=jobservice" --format "{{.Names}}" | head -1)
+          if [ ! -z "$JOBSERVICE_CONTAINER" ]; then
+            docker restart "$JOBSERVICE_CONTAINER"
+            sleep 10
+            docker ps --filter "name=jobservice"
+          else
+            echo "❌ Could not find jobservice container"
+          fi
           ;;
         jobservice-logs)
           echo "Harbor jobservice logs:"
-          docker-compose logs -f harbor-jobservice
+          JOBSERVICE_CONTAINER=$(docker ps -a --filter "name=jobservice" --format "{{.Names}}" | head -1)
+          if [ ! -z "$JOBSERVICE_CONTAINER" ]; then
+            docker logs -f "$JOBSERVICE_CONTAINER"
+          else
+            echo "❌ Could not find jobservice container"
+          fi
           ;;
         jobservice-status)
           echo "Harbor jobservice status:"
-          docker-compose ps harbor-jobservice
-          docker-compose exec harbor-jobservice ps aux | grep -E "(job|worker)" || echo "No jobservice processes found"
+          docker ps --filter "name=jobservice"
+          JOBSERVICE_CONTAINER=$(docker ps --filter "name=jobservice" --format "{{.Names}}" | head -1)
+          if [ ! -z "$JOBSERVICE_CONTAINER" ]; then
+            docker exec "$JOBSERVICE_CONTAINER" ps aux | grep -E "(job|worker)" || echo "No jobservice processes found"
+          else
+            echo "❌ Could not find running jobservice container"
+          fi
           ;;
         *)
           echo "Usage: \$0 {start|stop|restart|status|logs|jobservice-restart|jobservice-logs|jobservice-status}"
@@ -875,25 +895,30 @@ write_files:
       }
       
       # Check if jobservice container is running
-      JOBSERVICE_RUNNING=\$(docker-compose ps harbor-jobservice | grep -c "Up")
+      JOBSERVICE_RUNNING=\$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
       
       if [ "\$JOBSERVICE_RUNNING" -eq 0 ]; then
         log_message "ALERT: Harbor jobservice is not running"
         
         # Try to restart jobservice
         log_message "Attempting to restart harbor-jobservice..."
-        docker-compose restart harbor-jobservice
-        sleep 15
-        
-        # Check again
-        JOBSERVICE_RUNNING_RETRY=\$(docker-compose ps harbor-jobservice | grep -c "Up")
-        if [ "\$JOBSERVICE_RUNNING_RETRY" -eq 0 ]; then
-          log_message "CRITICAL: Harbor jobservice failed to restart"
-          # Log the container status and logs
-          docker-compose ps harbor-jobservice >> "\$LOG_FILE"
-          docker-compose logs --tail=50 harbor-jobservice >> "\$LOG_FILE"
+        JOBSERVICE_CONTAINER=\$(docker ps -a --filter "name=jobservice" --format "{{.Names}}" | head -1)
+        if [ ! -z "\$JOBSERVICE_CONTAINER" ]; then
+          docker restart "\$JOBSERVICE_CONTAINER"
+          sleep 15
+          
+          # Check again
+          JOBSERVICE_RUNNING_RETRY=\$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
+          if [ "\$JOBSERVICE_RUNNING_RETRY" -eq 0 ]; then
+            log_message "CRITICAL: Harbor jobservice failed to restart"
+            # Log the container status and logs
+            docker ps --filter "name=jobservice" >> "\$LOG_FILE"
+            docker logs --tail=50 "\$JOBSERVICE_CONTAINER" >> "\$LOG_FILE"
+          else
+            log_message "SUCCESS: Harbor jobservice restarted successfully"
+          fi
         else
-          log_message "SUCCESS: Harbor jobservice restarted successfully"
+          log_message "CRITICAL: Could not find jobservice container to restart"
         fi
       else
         log_message "OK: Harbor jobservice is running normally"
