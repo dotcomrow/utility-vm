@@ -994,7 +994,7 @@ write_files:
       echo "$(date): Generated Dex client secret for Harbor"
       
       # Create Dex configuration
-      cat > /opt/dex/config.yaml << DEXEOF
+      cat > /opt/dex/config.yaml << 'DEXEOF'
       issuer: https://harbor-dex.${RANCHER_DOMAIN}
       
       storage:
@@ -1051,7 +1051,7 @@ write_files:
       echo "$(date): Dex configuration summary:"
       echo "  - Issuer: $(grep '^issuer:' /opt/dex/config.yaml || echo 'NOT FOUND')"
       echo "  - GitHub Client ID: $(grep 'clientID:' /opt/dex/config.yaml | sed 's/.*clientID: *//' || echo 'NOT FOUND')"
-      echo "  - GitHub Org: $(grep 'name:.*GITHUB_ORG' /opt/dex/config.yaml || echo 'NOT FOUND')"
+      echo "  - GitHub Org: $(grep 'name:.*${GITHUB_ORG}' /opt/dex/config.yaml || echo 'NOT FOUND')"
       echo "  - Harbor redirect URI: $(grep 'harbor.*callback' /opt/dex/config.yaml || echo 'NOT FOUND')"
       echo "  - Storage file: $(grep 'file:' /opt/dex/config.yaml || echo 'NOT FOUND')"
       
