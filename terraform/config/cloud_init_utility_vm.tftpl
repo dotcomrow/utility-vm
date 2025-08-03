@@ -381,6 +381,7 @@ write_files:
       create_proxy_project "ghcr" "https://ghcr.io" "github-container-registry"
       create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
       create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
+      create_proxy_project "nvidia" "https://nvcr.io" "nvidia-container-registry"
       
       echo "✅ Harbor installation completed!"
       echo "🌐 Harbor is available at: http://$HARBOR_HOST"
@@ -401,6 +402,7 @@ write_files:
       echo "  - ghcr (GitHub Container Registry): $HARBOR_HOST/ghcr/"
       echo "  - k8s-gcr (Kubernetes GCR): $HARBOR_HOST/k8s-gcr/"
       echo "  - registry-k8s (Kubernetes Registry): $HARBOR_HOST/registry-k8s/"
+      echo "  - nvidia (NVIDIA Container Registry): $HARBOR_HOST/nvidia/"
       echo ""
       echo "🚀 Configure your Kubernetes cluster to use Harbor as pull-through cache:"
       echo "  Example: docker pull $HARBOR_HOST/dockerhub/nginx:latest"
@@ -572,8 +574,16 @@ write_files:
           echo "   ✅ Anonymous read access: ENABLED (for proxy cache pulls)"
           echo "   ✅ Project creation: ADMIN ONLY"
           echo "   ✅ Self registration: DISABLED"
-          echo "   🌐 GUI Access: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+          echo "   🌐 GUI Access: https://harbor.${RANCHER_DOMAIN} (Tailscale VPN + GitHub OAuth)"
           echo "   📦 Proxy Cache: docker pull harbor.${RANCHER_DOMAIN}/dockerhub/image:tag"
+          echo ""
+          echo "🌐 TAILSCALE FUNNEL ACCESS (Public Internet):"
+          echo "   • Harbor Container Registry:    https://harbor.${RANCHER_DOMAIN}"
+          echo "   • Rancher Kubernetes GUI:       https://k8s.${RANCHER_DOMAIN}"  
+          echo "   • API Gateway Manager:           https://gateway-manager.${RANCHER_DOMAIN}"
+          echo "   🔒 All services secured with GitHub team authentication"
+          echo "   🔐 Access restricted to GitHub organization: ${GITHUB_ORG}"
+          echo "   🌐 Browser VPN access - no client installation required"
           echo ""
           
           # Make the test-oidc-flow script executable (script created via cloud-init write_files)
@@ -598,6 +608,9 @@ write_files:
       
       # Make the harbor-manage script executable (script created via cloud-init write_files)
       chmod +x /usr/local/bin/harbor-manage
+      
+      # Make the setup-tailscale-domains script executable
+      chmod +x /usr/local/bin/setup-tailscale-domains.sh
       
       echo "✅ Harbor setup completed successfully"
       
@@ -821,28 +834,27 @@ write_files:
           if [ -n "$TAILSCALE_HOSTNAME" ] && [ "$TAILSCALE_HOSTNAME" != "null" ]; then
             echo "$(date): 🔧 Setting up Funnel services at https://$TAILSCALE_HOSTNAME"
             
-            # Configure Tailscale serve for multiple services using new CLI syntax
-            # Harbor on default HTTPS port (443)
-            sudo tailscale serve --bg --https=443 http://localhost:80
+            # Configure Tailscale serve for ${RANCHER_DOMAIN} services using dedicated script
+            echo "$(date): 🔧 Configuring Tailscale serve for ${RANCHER_DOMAIN} services..."
             
-            # Rancher GUI on port 8443
-            sudo tailscale serve --bg --https=8443 https://k8s.${RANCHER_DOMAIN}:443
+            # Run the dedicated domain setup script
+            /usr/local/bin/setup-tailscale-domains.sh
             
-            # APISIX Dashboard on port 9000
-            sudo tailscale serve --bg --https=9000 http://localhost:9000
+            # Services are now configured for VPN-only access with GitHub team auth
+            echo "$(date): ✅ Services configured for Tailscale VPN access only (no public funnel)"
             
-            # Enable Funnel for all configured ports
-            sudo tailscale funnel --bg --https=443
-            sudo tailscale funnel --bg --https=8443
-            sudo tailscale funnel --bg --https=9000
-            
-            echo "✅ Tailscale Funnel configured for multiple services"
-            echo "🌐 Services accessible via:"
-            echo "   • Harbor Container Registry:    https://$TAILSCALE_HOSTNAME"
-            echo "   • Rancher Kubernetes GUI:       https://$TAILSCALE_HOSTNAME:8443"
-            echo "   • APISIX API Gateway Dashboard: https://$TAILSCALE_HOSTNAME:9000"
-            echo "🔐 All services provide secure access from anywhere on the internet"
-            echo "⚠️  Note: Funnel traffic goes through Tailscale's infrastructure"
+            echo "✅ Tailscale serve configured for ${RANCHER_DOMAIN} services"
+            echo "🌐 Services accessible via public internet (GitHub team authentication required):"
+            echo "   • Harbor Container Registry:    https://harbor.${RANCHER_DOMAIN}"
+            echo "   • Rancher Kubernetes GUI:       https://k8s.${RANCHER_DOMAIN}" 
+            echo "   • API Gateway Manager:           https://gateway-manager.${RANCHER_DOMAIN}"
+            echo "🔒 All services secured with GitHub OAuth via Dex OIDC provider"
+            echo "🔐 Access restricted to members of GitHub organization '${GITHUB_ORG}'"
+            echo "🌐 Browser VPN access enabled - no Tailscale client installation required"
+            echo "⚠️  Note: Traffic routes through Tailscale's infrastructure for security"
+            echo "� All services secured with GitHub OAuth via Dex OIDC provider"
+            echo "🔐 Access restricted to members of GitHub organization '${GITHUB_ORG}'"
+            echo "ℹ️  Services are NOT publicly accessible (VPN-only for security)"
             
           else
             echo "⚠️  Could not determine Tailscale hostname for Funnel setup"
@@ -881,38 +893,44 @@ write_files:
           tailscale status --json | jq -r '.Self.PrimaryRoutes[]? // "No routes advertised"'
           echo ""
           echo "=== Available Services ==="
-          if tailscale funnel status >/dev/null 2>&1; then
-            TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
-            echo "  • Harbor Registry:       https://$TAILSCALE_HOSTNAME"
-            echo "  • Rancher GUI:           https://$TAILSCALE_HOSTNAME:8843"
-            echo "  • APISIX Dashboard:      https://$TAILSCALE_HOSTNAME:9000"
+          if tailscale status >/dev/null 2>&1; then
+            echo "🌐 ${RANCHER_DOMAIN} Services (Public Internet + GitHub team auth):"
+            echo "   • Harbor Container Registry:    https://harbor.${RANCHER_DOMAIN}"
+            echo "   • Rancher Kubernetes GUI:       https://k8s.${RANCHER_DOMAIN}"
+            echo "   • API Gateway Manager:           https://gateway-manager.${RANCHER_DOMAIN}"
+            echo "🔒 All services secured with GitHub OAuth (organization: ${GITHUB_ORG})"
+            echo "🌐 Browser VPN - No Tailscale client installation required"
           else
-            echo "  Funnel not enabled - services accessible via Tailscale network only"
+            echo "  Tailscale not connected - services accessible via internal network only"
           fi
           ;;
         services)
-          echo "=== Available Services ==="
+          echo "=== ${RANCHER_DOMAIN} Services ==="
           echo "• Harbor Container Registry"
           echo "  Internal: http://utility-node.internal.lan"
-          echo "  External: https://harbor.${RANCHER_DOMAIN}"
-          if tailscale status >/dev/null 2>&1; then
-            TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
-            echo "  Tailscale: https://$TAILSCALE_HOSTNAME"
-          fi
+          echo "  Public Internet: https://harbor.${RANCHER_DOMAIN}"
+          echo "  🔒 GitHub OAuth required (org: ${GITHUB_ORG})"
           echo ""
           echo "• Rancher Kubernetes Management"
           echo "  Internal: https://k8s.${RANCHER_DOMAIN}:443"
-          if tailscale status >/dev/null 2>&1; then
-            TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
-            echo "  Tailscale: https://$TAILSCALE_HOSTNAME:8443"
-          fi
+          echo "  Public Internet: https://k8s.${RANCHER_DOMAIN}"
+          echo "  🔒 GitHub OAuth required (org: ${GITHUB_ORG})"
           echo ""
-          echo "• APISIX API Gateway Dashboard"
+          echo "• API Gateway Manager"
           echo "  Internal: http://localhost:9000"
-          if tailscale status >/dev/null 2>&1; then
-            TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
-            echo "  Tailscale: https://$TAILSCALE_HOSTNAME:9000"
-          fi
+          echo "  Public Internet: https://gateway-manager.${RANCHER_DOMAIN}"
+          echo "  🔒 GitHub OAuth required (org: ${GITHUB_ORG})"
+          echo ""
+          echo "🔐 Authentication:"
+          echo "  • GitHub Teams with organization access: ${GITHUB_ORG}"
+          echo "  • Harbor admins: ${GITHUB_ORG}:harbor_admins"
+          echo "  • All authenticated users can access services via public internet"
+          echo ""
+          echo "🌐 Browser VPN Features:"
+          echo "  • No Tailscale client installation required"
+          echo "  • Access from any browser on any device"
+          echo "  • Secure TLS encryption via Tailscale Funnel"
+          echo "  • Traffic routed through Tailscale's infrastructure"
           ;;
         up)
           if [ -n "$2" ]; then
@@ -936,50 +954,61 @@ write_files:
           ;;
         funnel-status)
           echo "=== Tailscale Funnel Status ==="
-          tailscale funnel status 2>/dev/null || echo "Funnel not configured or not available"
-          ;;
-        funnel-enable)
-          TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
-          if [ -n "$TAILSCALE_HOSTNAME" ] && [ "$TAILSCALE_HOSTNAME" != "null" ]; then
-            echo "Enabling Tailscale Funnel for all services..."
-            
-            # Harbor on 443
-            sudo tailscale serve --bg --https=443 http://localhost:80
-            
-            # Rancher on 8443
-            sudo tailscale serve --bg --https=8443 https://k8s.${RANCHER_DOMAIN}:443
-            
-            # APISIX on 9000
-            sudo tailscale serve --bg --https=9000 http://localhost:9000
-            
-            # Enable Funnel for all ports
-            sudo tailscale funnel --bg --https=443
-            sudo tailscale funnel --bg --https=8443
-            sudo tailscale funnel --bg --https=9000
-            
-            echo "✅ Funnel enabled for all services"
-            echo "🌐 Services accessible via:"
-            echo "   • Harbor:    https://$TAILSCALE_HOSTNAME"
-            echo "   • Rancher:   https://$TAILSCALE_HOSTNAME:8443"
-            echo "   • APISIX:    https://$TAILSCALE_HOSTNAME:9000"
+          tailscale funnel status 2>/dev/null || echo "Tailscale funnel not configured"
+          echo ""
+          echo "=== Tailscale Serve Status ==="
+          tailscale serve status 2>/dev/null || echo "Tailscale serve not configured"
+          echo ""
+          echo "=== ${RANCHER_DOMAIN} Domain Status ==="
+          if tailscale funnel status 2>/dev/null | grep -q "${RANCHER_DOMAIN}\|443\|8443\|9000"; then
+            echo "✅ ${RANCHER_DOMAIN} domains configured with Funnel (public access)"
+            echo "🌐 Available services via public internet:"
+            echo "   • https://harbor.${RANCHER_DOMAIN}"
+            echo "   • https://k8s.${RANCHER_DOMAIN}"
+            echo "   • https://gateway-manager.${RANCHER_DOMAIN}"
+            echo "🌐 Browser VPN access enabled - no client installation required"
           else
-            echo "❌ Could not determine Tailscale hostname"
+            echo "❌ ${RANCHER_DOMAIN} domains not configured for public access"
+            echo "Run 'tailscale-manage funnel-enable' to configure public access"
           fi
           ;;
+        funnel-enable)
+          echo "🌐 Configuring Tailscale serve and funnel for ${RANCHER_DOMAIN} services..."
+          
+          # Configure serve for each service with custom hostnames
+          sudo tailscale serve --bg --https=443 --hostname=harbor.${RANCHER_DOMAIN} http://localhost:80
+          sudo tailscale serve --bg --https=8443 --hostname=k8s.${RANCHER_DOMAIN} https://localhost:443  
+          sudo tailscale serve --bg --https=9000 --hostname=gateway-manager.${RANCHER_DOMAIN} http://localhost:9000
+          
+          # Enable Tailscale Funnel for public internet access
+          echo "🌐 Enabling Tailscale Funnel for public internet access..."
+          sudo tailscale funnel --bg --https=443 on
+          sudo tailscale funnel --bg --https=8443 on
+          sudo tailscale funnel --bg --https=9000 on
+          
+          echo "✅ Tailscale serve and funnel configured for public access"
+          echo "🌐 Services accessible via public internet (no VPN required):"
+          echo "   • Harbor:         https://harbor.${RANCHER_DOMAIN}"
+          echo "   • Rancher:        https://k8s.${RANCHER_DOMAIN}"
+          echo "   • Gateway Mgr:    https://gateway-manager.${RANCHER_DOMAIN}"
+          echo "🔒 GitHub team authentication required for all services"
+          echo "🌐 Browser VPN access - no Tailscale client installation needed"
+          ;;
         funnel-disable)
-          echo "Disabling Tailscale Funnel..."
+          echo "Disabling Tailscale funnel and serve for all services..."
           sudo tailscale funnel --bg --https=443 off
           sudo tailscale funnel --bg --https=8443 off
           sudo tailscale funnel --bg --https=9000 off
           sudo tailscale serve reset
-          echo "✅ Funnel disabled for all services"
+          echo "✅ Tailscale funnel and serve disabled for all services"
+          echo "ℹ️  Services now only accessible via internal network"
           ;;
         logs)
           echo "=== Tailscale Service Logs ==="
           journalctl -u tailscaled --no-pager -n 50
           ;;
         *)
-          echo "Tailscale Management Script for Multi-Service Funnel"
+          echo "Tailscale Management Script for ${RANCHER_DOMAIN} Services"
           echo ""
           echo "Usage: $0 {status|services|up [auth-key]|down|routes|funnel-status|funnel-enable|funnel-disable|logs}"
           echo ""
@@ -989,24 +1018,120 @@ write_files:
           echo "  up [auth-key]  - Connect to Tailscale (optionally with auth key)"
           echo "  down           - Disconnect from Tailscale"
           echo "  routes         - Show route advertisement status"
-          echo "  funnel-status  - Show Tailscale Funnel status"
-          echo "  funnel-enable  - Enable Tailscale Funnel for Harbor, Rancher, and APISIX"
-          echo "  funnel-disable - Disable Tailscale Funnel"
+          echo "  funnel-status  - Show Tailscale funnel status"
+          echo "  funnel-enable  - Enable Tailscale funnel for public internet access"
+          echo "  funnel-disable - Disable Tailscale funnel (internal network only)"
           echo "  logs           - Show recent Tailscale service logs"
           echo ""
-          echo "Services accessible via Tailscale Funnel:"
-          echo "  • Harbor Container Registry (Port 443)"
-          echo "  • Rancher Kubernetes Management GUI (Port 8443)"
-          echo "  • APISIX API Gateway Dashboard (Port 9000)"
+          echo "${RANCHER_DOMAIN} Services (Public Internet + GitHub team authentication):"
+          echo "  • Harbor Container Registry:  https://harbor.${RANCHER_DOMAIN}"
+          echo "  • Rancher Kubernetes GUI:     https://k8s.${RANCHER_DOMAIN}"  
+          echo "  • API Gateway Manager:         https://gateway-manager.${RANCHER_DOMAIN}"
+          echo ""
+          echo "🔒 Security:"
+          echo "  • GitHub OAuth authentication required (organization: ${GITHUB_ORG})"
+          echo "  • Harbor admin access: ${GITHUB_ORG}:harbor_admins GitHub team"
+          echo "  • Public internet access via Tailscale Funnel"
+          echo "  • TLS encryption via Tailscale certificates"
+          echo ""
+          echo "🌐 Browser VPN Features:"
+          echo "  • No Tailscale client installation required"
+          echo "  • Access from any browser on any device"
+          echo "  • Secure access from anywhere on the internet"
+          echo "  • Traffic routed through Tailscale's infrastructure"
           echo ""
           echo "Examples:"
           echo "  $0 status                           # Check connection and service URLs"
           echo "  $0 services                         # Show all access methods for each service"
           echo "  $0 up tskey-auth-xxxxx             # Connect with auth key"  
-          echo "  $0 funnel-enable                   # Enable public access to all services"
+          echo "  $0 funnel-enable                   # Enable public internet access to services"
           exit 1
           ;;
       esac
+
+  - path: /usr/local/bin/setup-tailscale-domains.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      exec > >(tee -a /var/log/setup-tailscale-domains.log) 2>&1
+      
+      echo "$(date): 🔧 Configuring Tailscale serve for ${RANCHER_DOMAIN} domains..."
+      
+      # Wait for Tailscale to be connected
+      while ! tailscale status --json | jq -e '.BackendState == "Running"' >/dev/null 2>&1; do
+        echo "Waiting for Tailscale to be connected..."
+        sleep 5
+      done
+      
+      echo "✅ Tailscale is connected"
+      
+      # Configure serve for each service with custom domains
+      echo "🔧 Setting up harbor.${RANCHER_DOMAIN} -> localhost:80"
+      sudo tailscale serve --bg --https=443 --hostname=harbor.${RANCHER_DOMAIN} http://localhost:80
+      
+      echo "🔧 Setting up k8s.${RANCHER_DOMAIN} -> k8s.${RANCHER_DOMAIN}:443"  
+      sudo tailscale serve --bg --https=443 --hostname=k8s.${RANCHER_DOMAIN} https://k8s.${RANCHER_DOMAIN}:443
+      
+      echo "🔧 Setting up gateway-manager.${RANCHER_DOMAIN} -> gateway-manager.${RANCHER_DOMAIN}:443"
+      sudo tailscale serve --bg --https=443 --hostname=gateway-manager.${RANCHER_DOMAIN} https://gateway-manager.${RANCHER_DOMAIN}:443
+      
+      # Enable Tailscale Funnel for public internet access
+      echo "🌐 Enabling Tailscale Funnel for public internet access..."
+      sudo tailscale funnel --bg --https=443 on
+      
+      # Verify configuration
+      echo "🔧 Verifying Tailscale serve configuration..."
+      sleep 5
+      tailscale serve status || echo "Serve status not available yet"
+      
+      echo "✅ Tailscale serve and funnel configured for ${RANCHER_DOMAIN} domains"
+      echo "🌐 Services available via public internet (Tailscale Funnel):"
+      echo "   • https://harbor.${RANCHER_DOMAIN} (Harbor Container Registry)"
+      echo "   • https://k8s.${RANCHER_DOMAIN} (Rancher Kubernetes GUI)"
+      echo "   • https://gateway-manager.${RANCHER_DOMAIN} (API Gateway Manager)"
+      echo "🔒 All services require GitHub team authentication"
+      echo "🌐 Public access enabled - accessible from any browser without VPN client"
+
+  - path: /opt/tailscale/serve-config.json
+    permissions: '0644'
+    content: |
+      {
+        "TCP": {
+          "443": {
+            "HTTPS": true
+          },
+          "8443": {
+            "HTTPS": true
+          },
+          "9000": {
+            "HTTPS": true  
+          }
+        },
+        "Web": {
+          "harbor.${RANCHER_DOMAIN}:443": {
+            "Handlers": {
+              "/": {
+                "Proxy": "http://127.0.0.1:80"
+              }
+            }
+          },
+          "k8s.${RANCHER_DOMAIN}:8443": {
+            "Handlers": {
+              "/": {
+                "Proxy": "https://127.0.0.1:443"
+              }
+            }
+          },
+          "gateway-manager.${RANCHER_DOMAIN}:9000": {
+            "Handlers": {
+              "/": {
+                "Proxy": "http://127.0.0.1:9000"
+              }
+            }
+          }
+        }
+      }
 
   - path: /opt/harbor/harbor.yml.template
     permissions: '0644'
