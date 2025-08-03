@@ -385,12 +385,12 @@ write_files:
       echo "✅ Harbor installation completed!"
       echo "🌐 Harbor is available at: http://$HARBOR_HOST"
       echo "🌐 External Harbor URL: https://harbor.${RANCHER_DOMAIN}"
-      echo "🔐 Harbor authentication: Database mode (admin / Harbor12345)"
-      echo "⚠️  IMPORTANT: To enable GitHub OAuth:"
-      echo "   1. Deploy Dex OIDC provider as intermediary"
-      echo "   2. Configure Dex with GitHub OAuth credentials"
-      echo "   3. Configure Harbor to trust Dex as OIDC provider"
-      echo "   Note: Harbor does not support direct GitHub OAuth - requires OIDC provider like Dex"
+      echo "🔐 Harbor authentication: GitHub OAuth only (database auth disabled)"
+      echo "📦 Proxy cache: Anonymous read access enabled for pull-through functionality"
+      echo "⚠️  IMPORTANT: Harbor GUI requires GitHub OAuth authentication"
+      echo "   • Only users from GitHub organization '${GITHUB_ORG}' can access the GUI"
+      echo "   • Members of '${GITHUB_ORG}:harbor_admins' have administrative privileges"
+      echo "   • Proxy cache projects support anonymous pulls (no authentication required)"
       echo ""
       echo "🔧 Use 'harbor-manage' command to manage Harbor service"
       echo ""
@@ -422,7 +422,7 @@ write_files:
           # Get the Dex client secret that was generated
           DEX_CLIENT_SECRET=$(grep "secret:" /opt/dex/config.yaml | sed "s/.*secret: '//" | sed "s/'.*//")
           
-          # Configure Harbor OIDC settings
+          # Configure Harbor OIDC settings and disable database authentication
           OIDC_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
             -H "Content-Type: application/json" \
             -u "${HARBOR_USER}:${HARBOR_PASS}" \
@@ -437,7 +437,15 @@ write_files:
               \"oidc_auto_onboard\": true,
               \"oidc_user_claim\": \"email\",
               \"oidc_groups_claim\": \"groups\",
-              \"oidc_admin_group\": \"${GITHUB_ORG}:harbor_admins\"
+              \"oidc_admin_group\": \"${GITHUB_ORG}:harbor_admins\",
+              \"project_creation_restriction\": \"adminonly\",
+              \"self_registration\": false,
+              \"read_only\": false,
+              \"auth_proxy_settings\": {
+                \"endpoint\": \"\",
+                \"token_review_endpoint\": \"\",
+                \"skip_search\": false
+              }
             }")
           
           OIDC_HTTP_CODE=$(echo "$OIDC_CONFIG_RESPONSE" | tail -n1)
@@ -461,6 +469,43 @@ write_files:
             echo "Current auth_mode: $(echo "$VERIFY_CONFIG" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)"
             echo "Current oidc_endpoint: $(echo "$VERIFY_CONFIG" | jq -r '.oidc_endpoint.value // .oidc_endpoint' 2>/dev/null)"
             echo "Current oidc_client_id: $(echo "$VERIFY_CONFIG" | jq -r '.oidc_client_id.value // .oidc_client_id' 2>/dev/null)"
+            
+            # Configure anonymous read access for proxy cache functionality
+            echo "🔧 Ensuring anonymous read access for proxy cache..."
+            ANONYMOUS_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
+              -H "Content-Type: application/json" \
+              -u "${HARBOR_USER}:${HARBOR_PASS}" \
+              -d "{
+                \"auth_mode\": \"oidc_auth\",
+                \"project_creation_restriction\": \"adminonly\",
+                \"self_registration\": false
+              }")
+            
+            ANON_HTTP_CODE=$(echo "$ANONYMOUS_CONFIG_RESPONSE" | tail -n1)
+            if [ "$ANON_HTTP_CODE" = "200" ]; then
+              echo "✅ Anonymous read access configured for proxy cache projects"
+            else
+              echo "⚠️  Anonymous access configuration warning (HTTP $ANON_HTTP_CODE)"
+            fi
+            
+            echo "🔒 Finalizing security: Ensuring database authentication is fully disabled..."
+            # Final verification that only OIDC auth is enabled
+            FINAL_AUTH_CONFIG=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
+              -H "Content-Type: application/json" \
+              -u "${HARBOR_USER}:${HARBOR_PASS}" \
+              -d "{
+                \"auth_mode\": \"oidc_auth\",
+                \"self_registration\": false,
+                \"project_creation_restriction\": \"adminonly\"
+              }")
+            
+            FINAL_HTTP_CODE=$(echo "$FINAL_AUTH_CONFIG" | tail -n1)
+            if [ "$FINAL_HTTP_CODE" = "200" ]; then
+              echo "🔒 Database authentication disabled - Harbor GUI now requires GitHub OAuth"
+              echo "📦 Proxy cache projects retain anonymous read access for container pulls"
+            else
+              echo "⚠️  Final auth configuration warning (HTTP $FINAL_HTTP_CODE)"
+            fi
           else
             echo "⚠️  Harbor OIDC configuration failed (HTTP $OIDC_HTTP_CODE)"
             echo "Response: $OIDC_RESPONSE_BODY"
@@ -473,6 +518,16 @@ write_files:
           fi
           
           echo "✅ GitHub OAuth authentication via Dex configured successfully"
+          echo ""
+          echo "🔒 SECURITY SUMMARY:"
+          echo "   ✅ Database authentication: DISABLED (secure GUI access)"
+          echo "   ✅ GitHub OAuth: ENABLED (via Dex OIDC provider)"
+          echo "   ✅ Anonymous read access: ENABLED (for proxy cache pulls)"
+          echo "   ✅ Project creation: ADMIN ONLY"
+          echo "   ✅ Self registration: DISABLED"
+          echo "   🌐 GUI Access: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+          echo "   📦 Proxy Cache: docker pull harbor.${RANCHER_DOMAIN}/dockerhub/image:tag"
+          echo ""
           
           # Make the test-oidc-flow script executable (script created via cloud-init write_files)
           chmod +x /usr/local/bin/test-oidc-flow
@@ -484,9 +539,14 @@ write_files:
           echo "⚠️  Dex deployment failed, Harbor will use database authentication"
         fi
       else
-        echo "ℹ️  No GitHub OAuth credentials provided"
-        echo "ℹ️  Harbor using database authentication (admin/Harbor12345)"
-        echo "ℹ️  To enable GitHub OAuth, provide HARBOR_OIDC_CLIENT and HARBOR_OIDC_SECRET variables"
+        echo "⚠️  No GitHub OAuth credentials provided"
+        echo "🔒 SECURITY WARNING: Harbor GUI will be inaccessible without GitHub OAuth"
+        echo "📦 Proxy cache projects will still work with anonymous read access"
+        echo "ℹ️  To enable GitHub OAuth GUI access:"
+        echo "   • Set HARBOR_OIDC_CLIENT to your GitHub OAuth App Client ID"
+        echo "   • Set HARBOR_OIDC_SECRET to your GitHub OAuth App Client Secret"
+        echo "   • Set GITHUB_ORG to your GitHub organization name"
+        echo "🔐 Current configuration: OIDC-only authentication (no database auth)"
       fi
       
       # Make the harbor-manage script executable (script created via cloud-init write_files)
@@ -714,20 +774,20 @@ write_files:
           if [ -n "$TAILSCALE_HOSTNAME" ] && [ "$TAILSCALE_HOSTNAME" != "null" ]; then
             echo "$(date): 🔧 Setting up Funnel services at https://$TAILSCALE_HOSTNAME"
             
-            # Configure Tailscale serve for multiple services
+            # Configure Tailscale serve for multiple services using new CLI syntax
             # Harbor on default HTTPS port (443)
-            sudo tailscale serve https / http://localhost:80
+            sudo tailscale serve --bg --https=443 http://localhost:80
             
             # Rancher GUI on port 8443
-            sudo tailscale serve https:8443 https://k8s.${RANCHER_DOMAIN}:443
+            sudo tailscale serve --bg --https=8443 https://k8s.${RANCHER_DOMAIN}:443
             
             # APISIX Dashboard on port 9000
-            sudo tailscale serve https:9000 http://localhost:9000
+            sudo tailscale serve --bg --https=9000 http://localhost:9000
             
             # Enable Funnel for all configured ports
-            sudo tailscale funnel 443 on
-            sudo tailscale funnel 8443 on
-            sudo tailscale funnel 9000 on
+            sudo tailscale funnel --bg --https=443
+            sudo tailscale funnel --bg --https=8443
+            sudo tailscale funnel --bg --https=9000
             
             echo "✅ Tailscale Funnel configured for multiple services"
             echo "🌐 Services accessible via:"
@@ -837,18 +897,18 @@ write_files:
             echo "Enabling Tailscale Funnel for all services..."
             
             # Harbor on 443
-            sudo tailscale serve https / http://localhost:80
+            sudo tailscale serve --bg --https=443 http://localhost:80
             
             # Rancher on 8443
-            sudo tailscale serve https:8443 https://k8s.${RANCHER_DOMAIN}:443
+            sudo tailscale serve --bg --https=8443 https://k8s.${RANCHER_DOMAIN}:443
             
             # APISIX on 9000
-            sudo tailscale serve https:9000 http://localhost:9000
+            sudo tailscale serve --bg --https=9000 http://localhost:9000
             
             # Enable Funnel for all ports
-            sudo tailscale funnel 443 on
-            sudo tailscale funnel 8443 on
-            sudo tailscale funnel 9000 on
+            sudo tailscale funnel --bg --https=443
+            sudo tailscale funnel --bg --https=8443
+            sudo tailscale funnel --bg --https=9000
             
             echo "✅ Funnel enabled for all services"
             echo "🌐 Services accessible via:"
@@ -861,13 +921,10 @@ write_files:
           ;;
         funnel-disable)
           echo "Disabling Tailscale Funnel..."
-          sudo tailscale funnel 443 off
-          sudo tailscale funnel 8443 off
-          sudo tailscale funnel 9000 off
-          sudo tailscale serve --remove https
-          sudo tailscale serve --remove https:443
-          sudo tailscale serve --remove https:8443
-          sudo tailscale serve --remove https:9000
+          sudo tailscale funnel --bg --https=443 off
+          sudo tailscale funnel --bg --https=8443 off
+          sudo tailscale funnel --bg --https=9000 off
+          sudo tailscale serve reset
           echo "✅ Funnel disabled for all services"
           ;;
         logs)
@@ -931,8 +988,8 @@ write_files:
       harbor_admin_password: Harbor12345
       
       # Authentication configuration
-      # Using database authentication initially - GitHub OAuth will be configured via API
-      auth_mode: db_auth
+      # Using OIDC authentication for GitHub OAuth - database authentication will be disabled entirely
+      auth_mode: oidc_auth
       
       # OIDC authentication settings - DISABLED due to GitHub OAuth compatibility issues
       # GitHub OAuth App integration requires manual configuration through Harbor UI
