@@ -206,9 +206,466 @@ write_files:
       cd /opt/harbor
       cp harbor.yml.tmpl harbor.yml
       
-      # Configure Harbor with SSL disabled
+      # Use the pre-created template and configure Harbor
       HARBOR_HOSTNAME="$(hostname).internal.lan"
-      cat > /opt/harbor/harbor.yml << 'HARBOREOF'
+      cp /opt/harbor/harbor.yml.template /opt/harbor/harbor.yml
+      
+      # Replace the hostname placeholder
+      sed -i "s/HOSTNAME_PLACEHOLDER/$${HARBOR_HOSTNAME}/g" /opt/harbor/harbor.yml
+      
+      # Create required directories for Harbor logging on dedicated disk
+      mkdir -p /data/harbor/logs/jobs
+      mkdir -p /data/harbor/logs
+      
+      # Install Harbor
+      echo "🚀 Installing Harbor..."
+      /opt/harbor/install.sh --with-trivy
+      
+      # Wait for Harbor to start
+      echo "⏳ Waiting for Harbor to start..."
+      sleep 30
+      
+      # Check and fix jobservice if needed
+      echo "🔧 Checking Harbor jobservice health..."
+      cd /opt/harbor
+      
+      # Wait for all Harbor services to be ready
+      echo "⏳ Waiting for Harbor services to be ready..."
+      while true; do
+        if docker-compose ps | grep -q "Up" && docker-compose ps | grep -q "jobservice"; then
+          echo "✅ Harbor services are running"
+          break
+        fi
+        echo "Waiting for Harbor services..."
+        sleep 10
+      done
+      
+      # Check jobservice specifically
+      JOBSERVICE_STATUS=$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
+      if [ "$JOBSERVICE_STATUS" -eq 0 ]; then
+        echo "⚠️  Jobservice not running properly, restarting Harbor..."
+        docker-compose down
+        sleep 10
+        docker-compose up -d
+        sleep 30
+        
+        # Verify jobservice again
+        RETRY_STATUS=$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
+        if [ "$RETRY_STATUS" -eq 0 ]; then
+          echo "❌ Jobservice still failing, checking logs..."
+          docker-compose logs | grep jobservice
+          echo "Attempting jobservice container restart..."
+          JOBSERVICE_CONTAINER=$(docker ps -a --filter "name=jobservice" --format "{{.Names}}" | head -1)
+          if [ ! -z "$JOBSERVICE_CONTAINER" ]; then
+            docker restart "$JOBSERVICE_CONTAINER"
+            sleep 15
+          else
+            echo "❌ Could not find jobservice container to restart"
+          fi
+        else
+          echo "✅ Jobservice recovered after restart"
+        fi
+      else
+        echo "✅ Jobservice is running properly"
+      fi
+      
+      # Configure Harbor as pull-through cache
+      echo "🔧 Configuring Harbor as pull-through cache..."
+      
+      # Create proxy cache projects for common registries
+      HARBOR_HOST="localhost"
+      HARBOR_URL="http://$HARBOR_HOST"
+      export HARBOR_USER=${HARBOR_USER}
+      export HARBOR_PASS=${HARBOR_PASS}
+
+      
+      # Wait for Harbor API to be available with better timing
+      echo "⏳ Waiting for Harbor API to be fully ready..."
+      sleep 60  # Give Harbor more time to fully initialize
+      
+      until curl -f -s "$HARBOR_URL/api/v2.0/systeminfo" > /dev/null; do
+        echo "Waiting for Harbor API to be available..."
+        sleep 15
+      done
+      
+      # Wait additional time for Harbor to be fully operational
+      echo "✅ Harbor API available, waiting for full initialization..."
+      sleep 30
+      
+      # Function to create proxy cache project
+      create_proxy_project() {
+        local project_name=$1
+        local registry_url=$2
+        local registry_name=$3
+        
+        echo "Creating proxy cache project: $project_name"
+        
+        # Create registry endpoint first
+        echo "Creating registry endpoint: $registry_name"
+        REGISTRY_RESPONSE=$(curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/registries" \
+          -H "Content-Type: application/json" \
+          -u "${HARBOR_USER}:${HARBOR_PASS}" \
+          -d "{
+            \"name\": \"$registry_name\",
+            \"type\": \"docker-registry\",
+            \"url\": \"$registry_url\",
+            \"insecure\": false,
+            \"credential\": {
+              \"type\": \"basic\",
+              \"access_key\": \"\",
+              \"access_secret\": \"\"
+            }
+          }")
+        
+        HTTP_CODE=$(echo "$REGISTRY_RESPONSE" | tail -n1)
+        RESPONSE_BODY=$(echo "$REGISTRY_RESPONSE" | head -n -1)
+        
+        if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "409" ]; then
+          echo "❌ Failed to create registry $registry_name (HTTP $HTTP_CODE): $RESPONSE_BODY"
+          return 1
+        fi
+        
+        # Wait a moment for registry to be created
+        sleep 5
+        
+        # Get registry ID
+        echo "Getting registry ID for: $registry_name"
+        REGISTRY_ID=""
+        while true; do
+          REGISTRY_ID=$(curl -s "$HARBOR_URL/api/v2.0/registries" \
+            -u "${HARBOR_USER}:${HARBOR_PASS}" | \
+            jq -r ".[] | select(.name==\"$registry_name\") | .id" 2>/dev/null)
+          
+          if [ ! -z "$REGISTRY_ID" ] && [ "$REGISTRY_ID" != "null" ]; then
+            echo "✅ Found registry ID: $REGISTRY_ID"
+            break
+          fi
+          echo "Waiting for registry to be available..."
+          sleep 3
+        done
+        
+        if [ -z "$REGISTRY_ID" ] || [ "$REGISTRY_ID" == "null" ]; then
+          echo "❌ Failed to get registry ID for $registry_name"
+          return 1
+        fi
+        
+        # Create proxy cache project
+        echo "Creating proxy cache project: $project_name with registry ID: $REGISTRY_ID"
+        PROJECT_RESPONSE=$(curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects" \
+          -H "Content-Type: application/json" \
+          -u "${HARBOR_USER}:${HARBOR_PASS}" \
+          -d "{
+            \"project_name\": \"$project_name\",
+            \"registry_id\": $REGISTRY_ID,
+            \"metadata\": {
+              \"public\": \"true\"
+            }
+          }")
+        
+        PROJECT_HTTP_CODE=$(echo "$PROJECT_RESPONSE" | tail -n1)
+        PROJECT_RESPONSE_BODY=$(echo "$PROJECT_RESPONSE" | head -n -1)
+        
+        if [ "$PROJECT_HTTP_CODE" != "201" ] && [ "$PROJECT_HTTP_CODE" != "409" ]; then
+          echo "❌ Failed to create project $project_name (HTTP $PROJECT_HTTP_CODE): $PROJECT_RESPONSE_BODY"
+          return 1
+        fi
+        
+        echo "✅ Successfully created proxy cache project: $project_name"
+        sleep 2  # Brief pause between projects
+      }
+      
+      # Create proxy cache projects for popular registries
+      create_proxy_project "dockerhub" "https://registry-1.docker.io" "docker-hub"
+      create_proxy_project "gcr" "https://gcr.io" "google-gcr"
+      create_proxy_project "quay" "https://quay.io" "quay-io"
+      create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
+      create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
+      
+      echo "✅ Harbor installation completed!"
+      echo "🌐 Harbor is available at: http://$HARBOR_HOST"
+      echo "🌐 External Harbor URL: https://harbor.${RANCHER_DOMAIN}"
+      echo "🔐 Harbor authentication: Database mode (admin / Harbor12345)"
+      echo "⚠️  IMPORTANT: To enable GitHub OAuth:"
+      echo "   1. Deploy Dex OIDC provider as intermediary"
+      echo "   2. Configure Dex with GitHub OAuth credentials"
+      echo "   3. Configure Harbor to trust Dex as OIDC provider"
+      echo "   Note: Harbor does not support direct GitHub OAuth - requires OIDC provider like Dex"
+      echo ""
+      echo "🔧 Use 'harbor-manage' command to manage Harbor service"
+      echo ""
+      echo "📋 Proxy cache projects created:"
+      echo "  - dockerhub (Docker Hub): $HARBOR_HOST/dockerhub/"
+      echo "  - gcr (Google Container Registry): $HARBOR_HOST/gcr/"
+      echo "  - quay (Quay.io): $HARBOR_HOST/quay/"
+      echo "  - k8s-gcr (Kubernetes GCR): $HARBOR_HOST/k8s-gcr/"
+      echo "  - registry-k8s (Kubernetes Registry): $HARBOR_HOST/registry-k8s/"
+      echo ""
+      echo "🚀 Configure your Kubernetes cluster to use Harbor as pull-through cache:"
+      echo "  Example: docker pull $HARBOR_HOST/dockerhub/nginx:latest"
+      echo ""
+      
+      # Make the debug-oidc script executable (script created via cloud-init write_files)
+      chmod +x /usr/local/bin/debug-oidc
+      
+      # Deploy Dex OIDC provider if GitHub OAuth credentials are provided
+      if [ -n "${HARBOR_OIDC_CLIENT}" ] && [ -n "${HARBOR_OIDC_SECRET}" ]; then
+        echo "🔧 Deploying Dex OIDC provider for GitHub OAuth integration..."
+        if /usr/local/bin/setup-dex.sh; then
+          echo "✅ Dex deployment successful"
+          
+          # Configure Harbor to use Dex OIDC
+          echo "🔧 Configuring Harbor to use Dex OIDC..."
+          sleep 10  # Wait for Dex to be fully ready
+          
+          # Get the Dex client secret that was generated
+          DEX_CLIENT_SECRET=$(grep "secret:" /opt/dex/config.yaml | sed "s/.*secret: '//" | sed "s/'.*//")
+          
+          # Configure Harbor OIDC settings
+          OIDC_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
+            -H "Content-Type: application/json" \
+            -u "${HARBOR_USER}:${HARBOR_PASS}" \
+            -d "{
+              \"auth_mode\": \"oidc_auth\",
+              \"oidc_name\": \"GitHub via Dex\",
+              \"oidc_endpoint\": \"https://harbor-dex.${RANCHER_DOMAIN}\",
+              \"oidc_client_id\": \"harbor\",
+              \"oidc_client_secret\": \"$DEX_CLIENT_SECRET\",
+              \"oidc_scope\": \"openid email profile groups\",
+              \"oidc_verify_cert\": false,
+              \"oidc_auto_onboard\": true,
+              \"oidc_user_claim\": \"email\",
+              \"oidc_groups_claim\": \"groups\",
+              \"oidc_admin_group\": \"${GITHUB_ORG}:harbor_admins\"
+            }")
+          
+          OIDC_HTTP_CODE=$(echo "$OIDC_CONFIG_RESPONSE" | tail -n1)
+          OIDC_RESPONSE_BODY=$(echo "$OIDC_CONFIG_RESPONSE" | head -n -1)
+          
+          echo "🔧 Harbor OIDC Configuration Details:"
+          echo "  Request URL: $HARBOR_URL/api/v2.0/configurations"
+          echo "  HTTP Response Code: $OIDC_HTTP_CODE"
+          echo "  Dex Client Secret: $DEX_CLIENT_SECRET"
+          echo "  OIDC Endpoint: https://harbor-dex.${RANCHER_DOMAIN}"
+          
+          if [ "$OIDC_HTTP_CODE" = "200" ]; then
+            echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
+            echo "🔗 GitHub OIDC Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+            echo "👤 Users can now login with their GitHub accounts"
+            
+            # Verify the configuration was applied
+            echo "🔧 Verifying OIDC configuration..."
+            sleep 5
+            VERIFY_CONFIG=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "${HARBOR_USER}:${HARBOR_PASS}")
+            echo "Current auth_mode: $(echo "$VERIFY_CONFIG" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)"
+            echo "Current oidc_endpoint: $(echo "$VERIFY_CONFIG" | jq -r '.oidc_endpoint.value // .oidc_endpoint' 2>/dev/null)"
+            echo "Current oidc_client_id: $(echo "$VERIFY_CONFIG" | jq -r '.oidc_client_id.value // .oidc_client_id' 2>/dev/null)"
+          else
+            echo "⚠️  Harbor OIDC configuration failed (HTTP $OIDC_HTTP_CODE)"
+            echo "Response: $OIDC_RESPONSE_BODY"
+            echo "Harbor will continue using database authentication"
+            
+            # Try to get more details about the error
+            echo "🔧 Checking Harbor logs for errors..."
+            cd /opt/harbor
+            docker-compose logs --tail=10 core | grep -i error || echo "No recent errors found in Harbor core logs"
+          fi
+          
+          echo "✅ GitHub OAuth authentication via Dex configured successfully"
+          
+          # Make the test-oidc-flow script executable (script created via cloud-init write_files)
+          chmod +x /usr/local/bin/test-oidc-flow
+          
+          echo "🔧 Created debugging tools:"
+          echo "  - debug-oidc: Show current OIDC configuration and status"
+          echo "  - test-oidc-flow: Test the complete OIDC authentication flow"
+        else
+          echo "⚠️  Dex deployment failed, Harbor will use database authentication"
+        fi
+      else
+        echo "ℹ️  No GitHub OAuth credentials provided"
+        echo "ℹ️  Harbor using database authentication (admin/Harbor12345)"
+        echo "ℹ️  To enable GitHub OAuth, provide HARBOR_OIDC_CLIENT and HARBOR_OIDC_SECRET variables"
+      fi
+      
+      # Make the harbor-manage script executable (script created via cloud-init write_files)
+      chmod +x /usr/local/bin/harbor-manage
+      
+      echo "✅ Harbor setup completed successfully"
+
+  - path: /usr/local/bin/setup-dex.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      exec > >(tee -a /var/log/setup-dex.log) 2>&1  # Log all output
+      
+      echo "$(date): 🔧 Installing and configuring Dex OIDC provider..."
+      
+      # Validate required environment variables
+      if [ -z "${HARBOR_OIDC_CLIENT}" ] || [ -z "${HARBOR_OIDC_SECRET}" ] || [ -z "${RANCHER_DOMAIN}" ] || [ -z "${GITHUB_ORG}" ]; then
+        echo "❌ Missing required environment variables for Dex:"
+        echo "  HARBOR_OIDC_CLIENT: ${HARBOR_OIDC_CLIENT}"
+        echo "  HARBOR_OIDC_SECRET: ${HARBOR_OIDC_SECRET}"
+        echo "  RANCHER_DOMAIN: ${RANCHER_DOMAIN}"
+        echo "  GITHUB_ORG: ${GITHUB_ORG}"
+        echo "⚠️  Skipping Dex installation due to missing configuration"
+        exit 1
+      fi
+      
+      echo "$(date): ✅ Environment variables validated"
+      
+      # Create directories
+      mkdir -p /opt/dex /data/dex
+      
+      # Deploy Dex as a Docker container
+      cd /tmp
+      
+      echo "$(date): � Deploying Dex OIDC provider as Docker container..."
+      
+      # Create directories for Dex data and config
+      mkdir -p /opt/dex /data/dex
+      
+      # Generate client secret for Harbor
+      DEX_CLIENT_SECRET=$(openssl rand -hex 16)
+      echo "$(date): Generated Dex client secret for Harbor"
+      
+      # Create Dex configuration from template
+      cp /opt/dex/config.yaml.template /opt/dex/config.yaml
+      
+      # Replace placeholder with actual secret
+      sed -i "s/DEX_CLIENT_SECRET_PLACEHOLDER/$DEX_CLIENT_SECRET/" /opt/dex/config.yaml
+      
+      # Debug: Show final configuration (redacted)
+      echo "$(date): Dex configuration summary:"
+      echo "  - Issuer: $(grep '^issuer:' /opt/dex/config.yaml || echo 'NOT FOUND')"
+      echo "  - GitHub Client ID: $(grep 'clientID:' /opt/dex/config.yaml | sed 's/.*clientID: *//' || echo 'NOT FOUND')"
+      echo "  - GitHub Org: $(grep 'name:.*${GITHUB_ORG}' /opt/dex/config.yaml || echo 'NOT FOUND')"
+      echo "  - Harbor redirect URI: $(grep 'harbor.*callback' /opt/dex/config.yaml || echo 'NOT FOUND')"
+      echo "  - Storage file: $(grep 'file:' /opt/dex/config.yaml || echo 'NOT FOUND')"
+      
+      # Create dex user and ensure proper directory permissions
+      useradd --system --shell /bin/false --home-dir /data/dex dex 2>/dev/null || true
+      
+      # Ensure directories exist with proper permissions for container access
+      mkdir -p /data/dex /opt/dex
+      chmod -R 755 /data/dex /opt/dex
+      
+      # Create the database file directory explicitly
+      mkdir -p /data/dex
+      touch /data/dex/dex.db 2>/dev/null || true
+      chmod 666 /data/dex/dex.db 2>/dev/null || true
+      
+      # Pull Dex Docker image
+      DEX_IMAGE="dexidp/dex:v2.30.0"
+      echo "$(date): Pulling Dex Docker image: $DEX_IMAGE"
+      
+      if ! docker pull "$DEX_IMAGE"; then
+        echo "⚠️  Failed to pull $DEX_IMAGE, trying latest tag..."
+        DEX_IMAGE="dexidp/dex:latest"
+        if ! docker pull "$DEX_IMAGE"; then
+          echo "❌ Failed to pull Dex Docker image"
+          exit 1
+        fi
+      fi
+      
+      echo "✅ Dex Docker image pulled successfully"
+      
+      # Create Docker Compose file from template
+      cp /opt/dex/docker-compose.yml.template /opt/dex/docker-compose.yml
+      
+      # Start Dex container
+      echo "$(date): Starting Dex container..."
+      cd /opt/dex
+      
+      # Debug: Check directory permissions before starting
+      echo "$(date): Checking /data/dex permissions:"
+      ls -la /data/dex/
+      
+      if docker-compose up -d; then
+        echo "✅ Dex container started successfully"
+      else
+        echo "❌ Failed to start Dex container"
+        echo "Docker logs:"
+        docker-compose logs
+        exit 1
+      fi
+      
+      # Wait for Dex to be ready - infinite loop until success
+      echo "$(date): ⏳ Waiting for Dex to be ready..."
+      attempt=1
+      while true; do
+        # Try the OIDC discovery endpoint (this is the key endpoint)
+        if curl -f -s http://localhost:5556/.well-known/openid-configuration >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - OIDC discovery endpoint responding"
+          break
+        fi
+        
+        # Check Docker health status
+        if docker-compose ps | grep -q "healthy"; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - Docker health check passed"
+          break
+        fi
+        
+        # Try the health endpoint
+        if curl -f -s http://localhost:5556/healthz >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - /healthz endpoint responding"
+          break
+        fi
+        
+        # Try some alternative endpoint patterns
+        if curl -f -s http://localhost:5556/auth >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - /auth endpoint responding"
+          break
+        fi
+        
+        # Fallback to basic connectivity test
+        if curl -f -s http://localhost:5556/ >/dev/null 2>&1; then
+          echo "✅ Dex OIDC provider is ready (attempt $attempt) - main endpoint responding"
+          break
+        fi
+        
+        echo "Waiting for Dex to be ready... (attempt $attempt)"
+        if [ $((attempt % 10)) -eq 0 ]; then
+          echo "🔧 Current container status (attempt $attempt):"
+          docker-compose ps || true
+          echo "🔧 Latest container logs:"
+          docker-compose logs --tail=5 || true
+          echo "🔧 Testing primary endpoints:"
+          echo "  - /.well-known/openid-configuration: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/.well-known/openid-configuration 2>/dev/null || echo 'failed')"
+          echo "  - /healthz: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/healthz 2>/dev/null || echo 'failed')"
+          echo "🔧 Checking if container is still running..."
+          if ! docker-compose ps | grep -q "Up"; then
+            echo "❌ Container is no longer running! Breaking out of wait loop."
+            break
+          fi
+        fi
+        attempt=$((attempt + 1))
+        sleep 2
+      done
+      
+      # Final status check
+      CONTAINER_RUNNING=$(docker-compose ps | grep -c "Up" || echo "0")
+      
+      if [ "$CONTAINER_RUNNING" -gt 0 ]; then
+        echo "✅ Dex OIDC provider is fully operational"
+        echo "🌐 Dex issuer: https://harbor-dex.${RANCHER_DOMAIN}"
+        echo "🔧 Health endpoint: http://localhost:5556/healthz"
+        echo "🔧 OIDC discovery: http://localhost:5556/.well-known/openid-configuration"
+        echo "🔧 Use 'cd /opt/dex && docker-compose logs -f' to view logs"
+        echo "🔧 Use 'cd /opt/dex && docker-compose restart' to restart Dex"
+        exit 0
+      else
+        echo "❌ Dex container failed to start properly"
+        echo "Container status:"
+        docker-compose ps
+        echo "Container logs:"
+        docker-compose logs
+        exit 1
+      fi
+
+  - path: /opt/harbor/harbor.yml.template
+    permissions: '0644'
+    content: |
       # Configuration file of Harbor
       
       # The IP address or hostname to access admin UI and registry service.
@@ -460,204 +917,10 @@ write_files:
         enabled: false
         # default keep cache for one day.
         expire_hours: 24
-      HARBOREOF
-      
-      # Replace the hostname placeholder
-      sed -i "s/HOSTNAME_PLACEHOLDER/$${HARBOR_HOSTNAME}/g" /opt/harbor/harbor.yml
-      
-      # Create required directories for Harbor logging on dedicated disk
-      mkdir -p /data/harbor/logs/jobs
-      mkdir -p /data/harbor/logs
-      
-      # Install Harbor
-      echo "🚀 Installing Harbor..."
-      /opt/harbor/install.sh --with-trivy
-      
-      # Wait for Harbor to start
-      echo "⏳ Waiting for Harbor to start..."
-      sleep 30
-      
-      # Check and fix jobservice if needed
-      echo "🔧 Checking Harbor jobservice health..."
-      cd /opt/harbor
-      
-      # Wait for all Harbor services to be ready
-      echo "⏳ Waiting for Harbor services to be ready..."
-      while true; do
-        if docker-compose ps | grep -q "Up" && docker-compose ps | grep -q "jobservice"; then
-          echo "✅ Harbor services are running"
-          break
-        fi
-        echo "Waiting for Harbor services..."
-        sleep 10
-      done
-      
-      # Check jobservice specifically
-      JOBSERVICE_STATUS=$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
-      if [ "$JOBSERVICE_STATUS" -eq 0 ]; then
-        echo "⚠️  Jobservice not running properly, restarting Harbor..."
-        docker-compose down
-        sleep 10
-        docker-compose up -d
-        sleep 30
-        
-        # Verify jobservice again
-        RETRY_STATUS=$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
-        if [ "$RETRY_STATUS" -eq 0 ]; then
-          echo "❌ Jobservice still failing, checking logs..."
-          docker-compose logs | grep jobservice
-          echo "Attempting jobservice container restart..."
-          JOBSERVICE_CONTAINER=$(docker ps -a --filter "name=jobservice" --format "{{.Names}}" | head -1)
-          if [ ! -z "$JOBSERVICE_CONTAINER" ]; then
-            docker restart "$JOBSERVICE_CONTAINER"
-            sleep 15
-          else
-            echo "❌ Could not find jobservice container to restart"
-          fi
-        else
-          echo "✅ Jobservice recovered after restart"
-        fi
-      else
-        echo "✅ Jobservice is running properly"
-      fi
-      
-      # Configure Harbor as pull-through cache
-      echo "🔧 Configuring Harbor as pull-through cache..."
-      
-      # Create proxy cache projects for common registries
-      HARBOR_HOST="localhost"
-      HARBOR_URL="http://$HARBOR_HOST"
-      export HARBOR_USER=${HARBOR_USER}
-      export HARBOR_PASS=${HARBOR_PASS}
 
-      
-      # Wait for Harbor API to be available with better timing
-      echo "⏳ Waiting for Harbor API to be fully ready..."
-      sleep 60  # Give Harbor more time to fully initialize
-      
-      until curl -f -s "$HARBOR_URL/api/v2.0/systeminfo" > /dev/null; do
-        echo "Waiting for Harbor API to be available..."
-        sleep 15
-      done
-      
-      # Wait additional time for Harbor to be fully operational
-      echo "✅ Harbor API available, waiting for full initialization..."
-      sleep 30
-      
-      # Function to create proxy cache project
-      create_proxy_project() {
-        local project_name=$1
-        local registry_url=$2
-        local registry_name=$3
-        
-        echo "Creating proxy cache project: $project_name"
-        
-        # Create registry endpoint first
-        echo "Creating registry endpoint: $registry_name"
-        REGISTRY_RESPONSE=$(curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/registries" \
-          -H "Content-Type: application/json" \
-          -u "${HARBOR_USER}:${HARBOR_PASS}" \
-          -d "{
-            \"name\": \"$registry_name\",
-            \"type\": \"docker-registry\",
-            \"url\": \"$registry_url\",
-            \"insecure\": false,
-            \"credential\": {
-              \"type\": \"basic\",
-              \"access_key\": \"\",
-              \"access_secret\": \"\"
-            }
-          }")
-        
-        HTTP_CODE=$(echo "$REGISTRY_RESPONSE" | tail -n1)
-        RESPONSE_BODY=$(echo "$REGISTRY_RESPONSE" | head -n -1)
-        
-        if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "409" ]; then
-          echo "❌ Failed to create registry $registry_name (HTTP $HTTP_CODE): $RESPONSE_BODY"
-          return 1
-        fi
-        
-        # Wait a moment for registry to be created
-        sleep 5
-        
-        # Get registry ID
-        echo "Getting registry ID for: $registry_name"
-        REGISTRY_ID=""
-        while true; do
-          REGISTRY_ID=$(curl -s "$HARBOR_URL/api/v2.0/registries" \
-            -u "${HARBOR_USER}:${HARBOR_PASS}" | \
-            jq -r ".[] | select(.name==\"$registry_name\") | .id" 2>/dev/null)
-          
-          if [ ! -z "$REGISTRY_ID" ] && [ "$REGISTRY_ID" != "null" ]; then
-            echo "✅ Found registry ID: $REGISTRY_ID"
-            break
-          fi
-          echo "Waiting for registry to be available..."
-          sleep 3
-        done
-        
-        if [ -z "$REGISTRY_ID" ] || [ "$REGISTRY_ID" == "null" ]; then
-          echo "❌ Failed to get registry ID for $registry_name"
-          return 1
-        fi
-        
-        # Create proxy cache project
-        echo "Creating proxy cache project: $project_name with registry ID: $REGISTRY_ID"
-        PROJECT_RESPONSE=$(curl -s -w "\n%%{http_code}" -X POST "$HARBOR_URL/api/v2.0/projects" \
-          -H "Content-Type: application/json" \
-          -u "${HARBOR_USER}:${HARBOR_PASS}" \
-          -d "{
-            \"project_name\": \"$project_name\",
-            \"registry_id\": $REGISTRY_ID,
-            \"metadata\": {
-              \"public\": \"true\"
-            }
-          }")
-        
-        PROJECT_HTTP_CODE=$(echo "$PROJECT_RESPONSE" | tail -n1)
-        PROJECT_RESPONSE_BODY=$(echo "$PROJECT_RESPONSE" | head -n -1)
-        
-        if [ "$PROJECT_HTTP_CODE" != "201" ] && [ "$PROJECT_HTTP_CODE" != "409" ]; then
-          echo "❌ Failed to create project $project_name (HTTP $PROJECT_HTTP_CODE): $PROJECT_RESPONSE_BODY"
-          return 1
-        fi
-        
-        echo "✅ Successfully created proxy cache project: $project_name"
-        sleep 2  # Brief pause between projects
-      }
-      
-      # Create proxy cache projects for popular registries
-      create_proxy_project "dockerhub" "https://registry-1.docker.io" "docker-hub"
-      create_proxy_project "gcr" "https://gcr.io" "google-gcr"
-      create_proxy_project "quay" "https://quay.io" "quay-io"
-      create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
-      create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
-      
-      echo "✅ Harbor installation completed!"
-      echo "🌐 Harbor is available at: http://$HARBOR_HOST"
-      echo "🌐 External Harbor URL: https://harbor.${RANCHER_DOMAIN}"
-      echo "🔐 Harbor authentication: Database mode (admin / Harbor12345)"
-      echo "⚠️  IMPORTANT: To enable GitHub OAuth:"
-      echo "   1. Deploy Dex OIDC provider as intermediary"
-      echo "   2. Configure Dex with GitHub OAuth credentials"
-      echo "   3. Configure Harbor to trust Dex as OIDC provider"
-      echo "   Note: Harbor does not support direct GitHub OAuth - requires OIDC provider like Dex"
-      echo ""
-      echo "🔧 Use 'harbor-manage' command to manage Harbor service"
-      echo ""
-      echo "📋 Proxy cache projects created:"
-      echo "  - dockerhub (Docker Hub): $HARBOR_HOST/dockerhub/"
-      echo "  - gcr (Google Container Registry): $HARBOR_HOST/gcr/"
-      echo "  - quay (Quay.io): $HARBOR_HOST/quay/"
-      echo "  - k8s-gcr (Kubernetes GCR): $HARBOR_HOST/k8s-gcr/"
-      echo "  - registry-k8s (Kubernetes Registry): $HARBOR_HOST/registry-k8s/"
-      echo ""
-      echo "🚀 Configure your Kubernetes cluster to use Harbor as pull-through cache:"
-      echo "  Example: docker pull $HARBOR_HOST/dockerhub/nginx:latest"
-      echo ""
-      
-      # Create debugging tools for OIDC flow
-      cat > /usr/local/bin/debug-oidc << 'DEBUGEOF'
+  - path: /usr/local/bin/debug-oidc
+    permissions: '0755'
+    content: |
       #!/bin/bash
       echo "=== OIDC Debug Information ==="
       echo ""
@@ -722,164 +985,10 @@ write_files:
       echo "Monitor Harbor logs: cd /opt/harbor && docker-compose logs -f core"
       echo "Test OIDC discovery: curl -s http://localhost:5556/.well-known/openid_configuration | jq ."
       echo "View this debug info: debug-oidc"
-      DEBUGEOF
-      
-      chmod +x /usr/local/bin/debug-oidc
-      
-      # Deploy Dex OIDC provider if GitHub OAuth credentials are provided
-      if [ -n "${HARBOR_OIDC_CLIENT}" ] && [ -n "${HARBOR_OIDC_SECRET}" ]; then
-        echo "🔧 Deploying Dex OIDC provider for GitHub OAuth integration..."
-        if /usr/local/bin/setup-dex.sh; then
-          echo "✅ Dex deployment successful"
-          
-          # Configure Harbor to use Dex OIDC
-          echo "🔧 Configuring Harbor to use Dex OIDC..."
-          sleep 10  # Wait for Dex to be fully ready
-          
-          # Get the Dex client secret that was generated
-          DEX_CLIENT_SECRET=$(grep "secret:" /opt/dex/config.yaml | sed "s/.*secret: '//" | sed "s/'.*//")
-          
-          # Configure Harbor OIDC settings
-          OIDC_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
-            -H "Content-Type: application/json" \
-            -u "${HARBOR_USER}:${HARBOR_PASS}" \
-            -d "{
-              \"auth_mode\": \"oidc_auth\",
-              \"oidc_name\": \"GitHub via Dex\",
-              \"oidc_endpoint\": \"https://harbor-dex.${RANCHER_DOMAIN}\",
-              \"oidc_client_id\": \"harbor\",
-              \"oidc_client_secret\": \"$DEX_CLIENT_SECRET\",
-              \"oidc_scope\": \"openid email profile groups\",
-              \"oidc_verify_cert\": false,
-              \"oidc_auto_onboard\": true,
-              \"oidc_user_claim\": \"email\",
-              \"oidc_groups_claim\": \"groups\",
-              \"oidc_admin_group\": \"${GITHUB_ORG}:harbor_admins\"
-            }")
-          
-          OIDC_HTTP_CODE=$(echo "$OIDC_CONFIG_RESPONSE" | tail -n1)
-          OIDC_RESPONSE_BODY=$(echo "$OIDC_CONFIG_RESPONSE" | head -n -1)
-          
-          echo "🔧 Harbor OIDC Configuration Details:"
-          echo "  Request URL: $HARBOR_URL/api/v2.0/configurations"
-          echo "  HTTP Response Code: $OIDC_HTTP_CODE"
-          echo "  Dex Client Secret: $DEX_CLIENT_SECRET"
-          echo "  OIDC Endpoint: https://harbor-dex.${RANCHER_DOMAIN}"
-          
-          if [ "$OIDC_HTTP_CODE" = "200" ]; then
-            echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
-            echo "🔗 GitHub OIDC Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
-            echo "👤 Users can now login with their GitHub accounts"
-            
-            # Verify the configuration was applied
-            echo "🔧 Verifying OIDC configuration..."
-            sleep 5
-            VERIFY_CONFIG=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "${HARBOR_USER}:${HARBOR_PASS}")
-            echo "Current auth_mode: $(echo "$VERIFY_CONFIG" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)"
-            echo "Current oidc_endpoint: $(echo "$VERIFY_CONFIG" | jq -r '.oidc_endpoint.value // .oidc_endpoint' 2>/dev/null)"
-            echo "Current oidc_client_id: $(echo "$VERIFY_CONFIG" | jq -r '.oidc_client_id.value // .oidc_client_id' 2>/dev/null)"
-          else
-            echo "⚠️  Harbor OIDC configuration failed (HTTP $OIDC_HTTP_CODE)"
-            echo "Response: $OIDC_RESPONSE_BODY"
-            echo "Harbor will continue using database authentication"
-            
-            # Try to get more details about the error
-            echo "🔧 Checking Harbor logs for errors..."
-            cd /opt/harbor
-            docker-compose logs --tail=10 core | grep -i error || echo "No recent errors found in Harbor core logs"
-          fi
-          
-          echo "✅ GitHub OAuth authentication via Dex configured successfully"
-          
-          # Create an OIDC troubleshooting script
-          cat > /usr/local/bin/test-oidc-flow << 'TESTOIDCEOF'
-          #!/bin/bash
-          echo "=== Testing OIDC Flow ==="
-          
-          echo "1. Testing Dex OIDC Discovery..."
-          DISCOVERY_URL="http://localhost:5556/.well-known/openid_configuration"
-          DISCOVERY_RESULT=$(curl -s "$DISCOVERY_URL")
-          if [ $? -eq 0 ] && echo "$DISCOVERY_RESULT" | jq . >/dev/null 2>&1; then
-            echo "✅ Dex OIDC Discovery successful"
-            echo "   Issuer: $(echo "$DISCOVERY_RESULT" | jq -r .issuer)"
-            echo "   Auth endpoint: $(echo "$DISCOVERY_RESULT" | jq -r .authorization_endpoint)"
-            echo "   Token endpoint: $(echo "$DISCOVERY_RESULT" | jq -r .token_endpoint)"
-            echo "   Userinfo endpoint: $(echo "$DISCOVERY_RESULT" | jq -r .userinfo_endpoint)"
-          else
-            echo "❌ Dex OIDC Discovery failed"
-            echo "   URL: $DISCOVERY_URL"
-            echo "   Response: $DISCOVERY_RESULT"
-          fi
-          echo ""
-          
-          echo "2. Testing Harbor's ability to reach Dex..."
-          # This tests from Harbor's perspective (through the external URL)
-          HARBOR_TO_DEX_TEST=$(docker exec -it $(docker ps -q --filter "name=harbor-core") curl -s -w "%%{http_code}" "https://harbor-dex.${RANCHER_DOMAIN}/.well-known/openid-configuration" 2>/dev/null | tail -c 3)
-          if [ "$HARBOR_TO_DEX_TEST" = "200" ]; then
-            echo "✅ Harbor can reach Dex via external URL"
-          else
-            echo "❌ Harbor cannot reach Dex via external URL (HTTP $HARBOR_TO_DEX_TEST)"
-            echo "   This could be a networking/DNS issue"
-          fi
-          echo ""
-          
-          echo "3. Checking Harbor OIDC Configuration..."
-          HARBOR_URL="http://utility-node.internal.lan"
-          HARBOR_CONFIG=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345")
-          AUTH_MODE=$(echo "$HARBOR_CONFIG" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
-          OIDC_ENDPOINT=$(echo "$HARBOR_CONFIG" | jq -r '.oidc_endpoint.value // .oidc_endpoint' 2>/dev/null)
-          
-          if [ "$AUTH_MODE" = "oidc_auth" ]; then
-            echo "✅ Harbor is configured for OIDC authentication"
-            echo "   OIDC Provider: $(echo "$HARBOR_CONFIG" | jq -r '.oidc_name.value // .oidc_name' 2>/dev/null)"
-            echo "   OIDC Endpoint: $OIDC_ENDPOINT"
-            echo "   Client ID: $(echo "$HARBOR_CONFIG" | jq -r '.oidc_client_id.value // .oidc_client_id' 2>/dev/null)"
-          else
-            echo "❌ Harbor is not configured for OIDC (current mode: $AUTH_MODE)"
-          fi
-          echo ""
-          
-          echo "4. Testing the complete OIDC login URL..."
-          LOGIN_URL="https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
-          LOGIN_RESPONSE=$(curl -s -w "%%{http_code}" -o /dev/null "$LOGIN_URL" 2>/dev/null)
-          if [ "$LOGIN_RESPONSE" = "302" ] || [ "$LOGIN_RESPONSE" = "200" ]; then
-            echo "✅ Harbor OIDC login endpoint accessible (HTTP $LOGIN_RESPONSE)"
-            echo "   URL: $LOGIN_URL"
-          else
-            echo "❌ Harbor OIDC login endpoint issue (HTTP $LOGIN_RESPONSE)"
-            echo "   URL: $LOGIN_URL"
-          fi
-          echo ""
-          
-          echo "=== Common Issues and Solutions ==="
-          echo "• If Dex discovery fails: Check if Dex container is running"
-          echo "• If Harbor can't reach Dex: Check DNS/networking from Harbor to Dex"
-          echo "• If OIDC login fails: Check Dex logs for authorization errors"
-          echo "• If 'internal server error': Usually a configuration mismatch"
-          echo ""
-          echo "=== Useful Commands ==="
-          echo "• Monitor Dex logs: cd /opt/dex && docker-compose logs -f"
-          echo "• Monitor Harbor logs: cd /opt/harbor && docker-compose logs -f core"
-          echo "• Debug OIDC config: debug-oidc"
-          echo "• Run this test again: test-oidc-flow"
-        TESTOIDCEOF
-          
-          chmod +x /usr/local/bin/test-oidc-flow
-          
-          echo "🔧 Created debugging tools:"
-          echo "  - debug-oidc: Show current OIDC configuration and status"
-          echo "  - test-oidc-flow: Test the complete OIDC authentication flow"
-        else
-          echo "⚠️  Dex deployment failed, Harbor will use database authentication"
-        fi
-      else
-        echo "ℹ️  No GitHub OAuth credentials provided"
-        echo "ℹ️  Harbor using database authentication (admin/Harbor12345)"
-        echo "ℹ️  To enable GitHub OAuth, provide HARBOR_OIDC_CLIENT and HARBOR_OIDC_SECRET variables"
-      fi
-      
-      # Create comprehensive Harbor management script
-      cat > /usr/local/bin/harbor-manage << 'HARBORMGMTEOF'
+
+  - path: /usr/local/bin/harbor-manage
+    permissions: '0755'
+    content: |
       #!/bin/bash
       cd /opt/harbor
       case "$1" in
@@ -950,51 +1059,10 @@ write_files:
           exit 1
           ;;
       esac
-      HARBORMGMTEOF
-      
-      chmod +x /usr/local/bin/harbor-manage
-      
-      echo "✅ Harbor setup completed successfully"
 
-  - path: /usr/local/bin/setup-dex.sh
-    permissions: '0755'
+  - path: /opt/dex/config.yaml.template
+    permissions: '0644'
     content: |
-      #!/bin/bash
-      set -e
-      exec > >(tee -a /var/log/setup-dex.log) 2>&1  # Log all output
-      
-      echo "$(date): 🔧 Installing and configuring Dex OIDC provider..."
-      
-      # Validate required environment variables
-      if [ -z "${HARBOR_OIDC_CLIENT}" ] || [ -z "${HARBOR_OIDC_SECRET}" ] || [ -z "${RANCHER_DOMAIN}" ] || [ -z "${GITHUB_ORG}" ]; then
-        echo "❌ Missing required environment variables for Dex:"
-        echo "  HARBOR_OIDC_CLIENT: ${HARBOR_OIDC_CLIENT}"
-        echo "  HARBOR_OIDC_SECRET: ${HARBOR_OIDC_SECRET}"
-        echo "  RANCHER_DOMAIN: ${RANCHER_DOMAIN}"
-        echo "  GITHUB_ORG: ${GITHUB_ORG}"
-        echo "⚠️  Skipping Dex installation due to missing configuration"
-        exit 1
-      fi
-      
-      echo "$(date): ✅ Environment variables validated"
-      
-      # Create directories
-      mkdir -p /opt/dex /data/dex
-      
-      # Deploy Dex as a Docker container
-      cd /tmp
-      
-      echo "$(date): � Deploying Dex OIDC provider as Docker container..."
-      
-      # Create directories for Dex data and config
-      mkdir -p /opt/dex /data/dex
-      
-      # Generate client secret for Harbor
-      DEX_CLIENT_SECRET=$(openssl rand -hex 16)
-      echo "$(date): Generated Dex client secret for Harbor"
-      
-      # Create Dex configuration
-      cat > /opt/dex/config.yaml << 'DEXEOF'
       issuer: https://harbor-dex.${RANCHER_DOMAIN}
       
       storage:
@@ -1042,48 +1110,10 @@ write_files:
       logger:
         level: debug
         format: json
-      DEXEOF
-      
-      # Replace placeholder with actual secret
-      sed -i "s/DEX_CLIENT_SECRET_PLACEHOLDER/$DEX_CLIENT_SECRET/" /opt/dex/config.yaml
-      
-      # Debug: Show final configuration (redacted)
-      echo "$(date): Dex configuration summary:"
-      echo "  - Issuer: $(grep '^issuer:' /opt/dex/config.yaml || echo 'NOT FOUND')"
-      echo "  - GitHub Client ID: $(grep 'clientID:' /opt/dex/config.yaml | sed 's/.*clientID: *//' || echo 'NOT FOUND')"
-      echo "  - GitHub Org: $(grep 'name:.*${GITHUB_ORG}' /opt/dex/config.yaml || echo 'NOT FOUND')"
-      echo "  - Harbor redirect URI: $(grep 'harbor.*callback' /opt/dex/config.yaml || echo 'NOT FOUND')"
-      echo "  - Storage file: $(grep 'file:' /opt/dex/config.yaml || echo 'NOT FOUND')"
-      
-      # Create dex user and ensure proper directory permissions
-      useradd --system --shell /bin/false --home-dir /data/dex dex 2>/dev/null || true
-      
-      # Ensure directories exist with proper permissions for container access
-      mkdir -p /data/dex /opt/dex
-      chmod -R 755 /data/dex /opt/dex
-      
-      # Create the database file directory explicitly
-      mkdir -p /data/dex
-      touch /data/dex/dex.db 2>/dev/null || true
-      chmod 666 /data/dex/dex.db 2>/dev/null || true
-      
-      # Pull Dex Docker image
-      DEX_IMAGE="dexidp/dex:v2.30.0"
-      echo "$(date): Pulling Dex Docker image: $DEX_IMAGE"
-      
-      if ! docker pull "$DEX_IMAGE"; then
-        echo "⚠️  Failed to pull $DEX_IMAGE, trying latest tag..."
-        DEX_IMAGE="dexidp/dex:latest"
-        if ! docker pull "$DEX_IMAGE"; then
-          echo "❌ Failed to pull Dex Docker image"
-          exit 1
-        fi
-      fi
-      
-      echo "✅ Dex Docker image pulled successfully"
-      
-      # Create Docker Compose file for Dex
-      cat > /opt/dex/docker-compose.yml << 'DEXCOMPOSEEOF'
+
+  - path: /opt/dex/docker-compose.yml.template
+    permissions: '0644'
+    content: |
       version: '3.8'
       
       services:
@@ -1111,97 +1141,79 @@ write_files:
       networks:
         dex-network:
           driver: bridge
-      DEXCOMPOSEEOF
+
+  - path: /usr/local/bin/test-oidc-flow
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      echo "=== Testing OIDC Flow ==="
       
-      # Start Dex container
-      echo "$(date): Starting Dex container..."
-      cd /opt/dex
-      
-      # Debug: Check directory permissions before starting
-      echo "$(date): Checking /data/dex permissions:"
-      ls -la /data/dex/
-      
-      if docker-compose up -d; then
-        echo "✅ Dex container started successfully"
+      echo "1. Testing Dex OIDC Discovery..."
+      DISCOVERY_URL="http://localhost:5556/.well-known/openid_configuration"
+      DISCOVERY_RESULT=$(curl -s "$DISCOVERY_URL")
+      if [ $? -eq 0 ] && echo "$DISCOVERY_RESULT" | jq . >/dev/null 2>&1; then
+        echo "✅ Dex OIDC Discovery successful"
+        echo "   Issuer: $(echo "$DISCOVERY_RESULT" | jq -r .issuer)"
+        echo "   Auth endpoint: $(echo "$DISCOVERY_RESULT" | jq -r .authorization_endpoint)"
+        echo "   Token endpoint: $(echo "$DISCOVERY_RESULT" | jq -r .token_endpoint)"
+        echo "   Userinfo endpoint: $(echo "$DISCOVERY_RESULT" | jq -r .userinfo_endpoint)"
       else
-        echo "❌ Failed to start Dex container"
-        echo "Docker logs:"
-        docker-compose logs
-        exit 1
+        echo "❌ Dex OIDC Discovery failed"
+        echo "   URL: $DISCOVERY_URL"
+        echo "   Response: $DISCOVERY_RESULT"
       fi
+      echo ""
       
-      # Wait for Dex to be ready - infinite loop until success
-      echo "$(date): ⏳ Waiting for Dex to be ready..."
-      attempt=1
-      while true; do
-        # Try the OIDC discovery endpoint (this is the key endpoint)
-        if curl -f -s http://localhost:5556/.well-known/openid-configuration >/dev/null 2>&1; then
-          echo "✅ Dex OIDC provider is ready (attempt $attempt) - OIDC discovery endpoint responding"
-          break
-        fi
-        
-        # Check Docker health status
-        if docker-compose ps | grep -q "healthy"; then
-          echo "✅ Dex OIDC provider is ready (attempt $attempt) - Docker health check passed"
-          break
-        fi
-        
-        # Try the health endpoint
-        if curl -f -s http://localhost:5556/healthz >/dev/null 2>&1; then
-          echo "✅ Dex OIDC provider is ready (attempt $attempt) - /healthz endpoint responding"
-          break
-        fi
-        
-        # Try some alternative endpoint patterns
-        if curl -f -s http://localhost:5556/auth >/dev/null 2>&1; then
-          echo "✅ Dex OIDC provider is ready (attempt $attempt) - /auth endpoint responding"
-          break
-        fi
-        
-        # Fallback to basic connectivity test
-        if curl -f -s http://localhost:5556/ >/dev/null 2>&1; then
-          echo "✅ Dex OIDC provider is ready (attempt $attempt) - main endpoint responding"
-          break
-        fi
-        
-        echo "Waiting for Dex to be ready... (attempt $attempt)"
-        if [ $((attempt % 10)) -eq 0 ]; then
-          echo "🔧 Current container status (attempt $attempt):"
-          docker-compose ps || true
-          echo "🔧 Latest container logs:"
-          docker-compose logs --tail=5 || true
-          echo "🔧 Testing primary endpoints:"
-          echo "  - /.well-known/openid-configuration: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/.well-known/openid-configuration 2>/dev/null || echo 'failed')"
-          echo "  - /healthz: $(curl -s -o /dev/null -w '%%{http_code}' http://localhost:5556/healthz 2>/dev/null || echo 'failed')"
-          echo "🔧 Checking if container is still running..."
-          if ! docker-compose ps | grep -q "Up"; then
-            echo "❌ Container is no longer running! Breaking out of wait loop."
-            break
-          fi
-        fi
-        attempt=$((attempt + 1))
-        sleep 2
-      done
-      
-      # Final status check
-      CONTAINER_RUNNING=$(docker-compose ps | grep -c "Up" || echo "0")
-      
-      if [ "$CONTAINER_RUNNING" -gt 0 ]; then
-        echo "✅ Dex OIDC provider is fully operational"
-        echo "🌐 Dex issuer: https://harbor-dex.${RANCHER_DOMAIN}"
-        echo "🔧 Health endpoint: http://localhost:5556/healthz"
-        echo "🔧 OIDC discovery: http://localhost:5556/.well-known/openid-configuration"
-        echo "🔧 Use 'cd /opt/dex && docker-compose logs -f' to view logs"
-        echo "🔧 Use 'cd /opt/dex && docker-compose restart' to restart Dex"
-        exit 0
+      echo "2. Testing Harbor's ability to reach Dex..."
+      # This tests from Harbor's perspective (through the external URL)
+      HARBOR_TO_DEX_TEST=$(docker exec -it $(docker ps -q --filter "name=harbor-core") curl -s -w "%{http_code}" "https://harbor-dex.${RANCHER_DOMAIN}/.well-known/openid-configuration" 2>/dev/null | tail -c 3)
+      if [ "$HARBOR_TO_DEX_TEST" = "200" ]; then
+        echo "✅ Harbor can reach Dex via external URL"
       else
-        echo "❌ Dex container failed to start properly"
-        echo "Container status:"
-        docker-compose ps
-        echo "Container logs:"
-        docker-compose logs
-        exit 1
+        echo "❌ Harbor cannot reach Dex via external URL (HTTP $HARBOR_TO_DEX_TEST)"
+        echo "   This could be a networking/DNS issue"
       fi
+      echo ""
+      
+      echo "3. Checking Harbor OIDC Configuration..."
+      HARBOR_URL="http://utility-node.internal.lan"
+      HARBOR_CONFIG=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345")
+      AUTH_MODE=$(echo "$HARBOR_CONFIG" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
+      OIDC_ENDPOINT=$(echo "$HARBOR_CONFIG" | jq -r '.oidc_endpoint.value // .oidc_endpoint' 2>/dev/null)
+      
+      if [ "$AUTH_MODE" = "oidc_auth" ]; then
+        echo "✅ Harbor is configured for OIDC authentication"
+        echo "   OIDC Provider: $(echo "$HARBOR_CONFIG" | jq -r '.oidc_name.value // .oidc_name' 2>/dev/null)"
+        echo "   OIDC Endpoint: $OIDC_ENDPOINT"
+        echo "   Client ID: $(echo "$HARBOR_CONFIG" | jq -r '.oidc_client_id.value // .oidc_client_id' 2>/dev/null)"
+      else
+        echo "❌ Harbor is not configured for OIDC (current mode: $AUTH_MODE)"
+      fi
+      echo ""
+      
+      echo "4. Testing the complete OIDC login URL..."
+      LOGIN_URL="https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+      LOGIN_RESPONSE=$(curl -s -w "%{http_code}" -o /dev/null "$LOGIN_URL" 2>/dev/null)
+      if [ "$LOGIN_RESPONSE" = "302" ] || [ "$LOGIN_RESPONSE" = "200" ]; then
+        echo "✅ Harbor OIDC login endpoint accessible (HTTP $LOGIN_RESPONSE)"
+        echo "   URL: $LOGIN_URL"
+      else
+        echo "❌ Harbor OIDC login endpoint issue (HTTP $LOGIN_RESPONSE)"
+        echo "   URL: $LOGIN_URL"
+      fi
+      echo ""
+      
+      echo "=== Common Issues and Solutions ==="
+      echo "• If Dex discovery fails: Check if Dex container is running"
+      echo "• If Harbor can't reach Dex: Check DNS/networking from Harbor to Dex"
+      echo "• If OIDC login fails: Check Dex logs for authorization errors"
+      echo "• If 'internal server error': Usually a configuration mismatch"
+      echo ""
+      echo "=== Useful Commands ==="
+      echo "• Monitor Dex logs: cd /opt/dex && docker-compose logs -f"
+      echo "• Monitor Harbor logs: cd /opt/harbor && docker-compose logs -f core"
+      echo "• Debug OIDC config: debug-oidc"
+      echo "• Run this test again: test-oidc-flow"
 
   - path: /usr/local/bin/performance-tuning.sh
     permissions: '0755'
