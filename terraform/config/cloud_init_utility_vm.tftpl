@@ -429,6 +429,99 @@ write_files:
         sleep 2  # Brief pause between projects
       }
       
+      # Check and fix jobservice if needed
+      echo "🔧 Checking Harbor jobservice health..."
+      cd /opt/harbor
+      
+      # Wait for all Harbor services to be ready
+      echo "⏳ Waiting for Harbor services to be ready..."
+      while true; do
+        if docker-compose ps | grep -q "Up" && docker-compose ps | grep -q "jobservice"; then
+          echo "✅ Harbor services are running"
+          break
+        fi
+        echo "Waiting for Harbor services..."
+        sleep 10
+      done
+      
+      # Check jobservice specifically
+      JOBSERVICE_STATUS=$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
+      if [ "$JOBSERVICE_STATUS" -eq 0 ]; then
+        echo "⚠️  Jobservice not running properly, restarting Harbor..."
+        docker-compose down
+        sleep 10
+        docker-compose up -d
+        sleep 30
+        
+        # Verify jobservice again
+        RETRY_STATUS=$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
+        if [ "$RETRY_STATUS" -eq 0 ]; then
+          echo "❌ Jobservice still failing, checking logs..."
+          docker-compose logs | grep jobservice
+          echo "Attempting jobservice container restart..."
+          JOBSERVICE_CONTAINER=$(docker ps -a --filter "name=jobservice" --format "{{.Names}}" | head -1)
+          if [ ! -z "$JOBSERVICE_CONTAINER" ]; then
+            docker restart "$JOBSERVICE_CONTAINER"
+            sleep 15
+          else
+            echo "❌ Could not find jobservice container to restart"
+          fi
+        else
+          echo "✅ Jobservice recovered after restart"
+        fi
+      else
+        echo "✅ Jobservice is running properly"
+      fi
+      
+      # Configure Harbor as pull-through cache
+      echo "🔧 Configuring Harbor as pull-through cache..."
+      
+      # Create proxy cache projects for common registries
+      HARBOR_HOST="localhost"
+      HARBOR_URL="http://$HARBOR_HOST"
+      export HARBOR_USER=${HARBOR_USER}
+      export HARBOR_PASS=${HARBOR_PASS}
+
+      
+      # Wait for Harbor API to be available with better timing
+      echo "⏳ Waiting for Harbor API to be fully ready..."
+      sleep 60  # Give Harbor more time to fully initialize
+      
+      until curl -f -s "$HARBOR_URL/api/v2.0/systeminfo" > /dev/null; do
+        echo "Waiting for Harbor API to be available..."
+        sleep 15
+      done
+      
+      # Wait additional time for Harbor to be fully operational
+      echo "✅ Harbor API available, waiting for full initialization..."
+      sleep 30
+      
+      # Check if there's existing Harbor data on the persistent disk
+      echo "🔧 Checking for existing proxy cache projects..."
+      EXISTING_PROJECTS=$(curl -s "$HARBOR_URL/api/v2.0/projects" -u "${HARBOR_USER}:${HARBOR_PASS}" | jq -r '.[].name' 2>/dev/null || echo "")
+      
+      if echo "$EXISTING_PROJECTS" | grep -q "dockerhub\|gcr\|quay"; then
+        echo "✅ Existing proxy cache projects detected - skipping project creation"
+        echo "📦 Found existing projects: $(echo "$EXISTING_PROJECTS" | tr '\n' ' ')"
+      else
+        echo "🔧 Creating proxy cache projects for popular registries..."
+        # Create proxy cache projects for popular registries
+        create_proxy_project "dockerhub" "https://registry-1.docker.io" "docker-hub"
+        create_proxy_project "gcr" "https://gcr.io" "google-gcr"
+        create_proxy_project "quay" "https://quay.io" "quay-io"
+        create_proxy_project "ghcr" "https://ghcr.io" "github-container-registry"
+        create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
+        create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
+        create_proxy_project "nvidia" "https://nvcr.io" "nvidia-container-registry"
+        echo "✅ Proxy cache projects created successfully"
+      fi
+      
+      # Common Harbor setup - applies to both fresh and existing installations
+      
+      # Wait for Harbor to start
+      echo "⏳ Waiting for Harbor to start..."
+      sleep 30
+      
       # Common completion messages for both existing and fresh installations
       echo "✅ Harbor setup completed!"
       echo "🌐 Harbor is available at: http://$HARBOR_HOST"
