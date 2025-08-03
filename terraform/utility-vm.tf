@@ -99,8 +99,14 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
     cache     = "unsafe"
   }
 
-  scsi1 = "/dev/ClusterStorage/harbor-data"
-
+  disk {
+    datastore_id = "ClusterStorage"
+    file_id      = "ClusterStorage:harbor-data"
+    interface    = "scsi1"
+    iothread     = true
+    discard      = "on"
+    cache        = "unsafe"
+  }
 
   scsi_hardware = "virtio-scsi-single"  # ✅ Enable for efficient single queue
 
