@@ -52,7 +52,7 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
   lifecycle {
     prevent_destroy = false  # Set to true to prevent 'terraform destroy'
     ignore_changes = [
-      disk[1].file_id,  # Ignore changes to the Harbor disk reference
+      disk[1]          # Ignore all changes to the second disk (Harbor disk)
     ]
   }
 
