@@ -33,6 +33,8 @@ resource "proxmox_virtual_environment_file" "utility_cloud_init_config" {
         HARBOR_OIDC_SECRET = var.HARBOR_OIDC_SECRET
         RANCHER_DOMAIN = var.RANCHER_DOMAIN
         GITHUB_ORG = var.GITHUB_ORG
+        TAILSCALE_AUTH_KEY = var.TAILSCALE_AUTH_KEY
+        TAILSCALE_FUNNEL_ENABLED = var.TAILSCALE_FUNNEL_ENABLED
       })
     file_name = "cloud_init_utility_vm.yaml"
   }

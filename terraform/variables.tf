@@ -154,3 +154,16 @@ variable "HARBOR_OIDC_SECRET" {
   sensitive   = true
   default     = "supersecret"
 }
+
+variable "TAILSCALE_AUTH_KEY" {
+  description = "Tailscale authentication key for automatic connection (use reusable + ephemeral key for frequent rebuilds)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "TAILSCALE_FUNNEL_ENABLED" {
+  description = "Enable Tailscale Funnel for public Harbor access"
+  type        = bool
+  default     = true
+}

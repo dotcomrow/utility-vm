@@ -378,6 +378,7 @@ write_files:
       create_proxy_project "dockerhub" "https://registry-1.docker.io" "docker-hub"
       create_proxy_project "gcr" "https://gcr.io" "google-gcr"
       create_proxy_project "quay" "https://quay.io" "quay-io"
+      create_proxy_project "ghcr" "https://ghcr.io" "github-container-registry"
       create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
       create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
       
@@ -397,6 +398,7 @@ write_files:
       echo "  - dockerhub (Docker Hub): $HARBOR_HOST/dockerhub/"
       echo "  - gcr (Google Container Registry): $HARBOR_HOST/gcr/"
       echo "  - quay (Quay.io): $HARBOR_HOST/quay/"
+      echo "  - ghcr (GitHub Container Registry): $HARBOR_HOST/ghcr/"
       echo "  - k8s-gcr (Kubernetes GCR): $HARBOR_HOST/k8s-gcr/"
       echo "  - registry-k8s (Kubernetes Registry): $HARBOR_HOST/registry-k8s/"
       echo ""
@@ -491,6 +493,14 @@ write_files:
       chmod +x /usr/local/bin/harbor-manage
       
       echo "✅ Harbor setup completed successfully"
+      
+      # Setup Tailscale
+      echo "🔧 Setting up Tailscale..."
+      if /usr/local/bin/setup-tailscale.sh; then
+        echo "✅ Tailscale setup completed successfully"
+      else
+        echo "⚠️  Tailscale setup failed, but system is functional"
+      fi
 
   - path: /usr/local/bin/setup-dex.sh
     permissions: '0755'
@@ -662,6 +672,237 @@ write_files:
         docker-compose logs
         exit 1
       fi
+
+  - path: /usr/local/bin/setup-tailscale.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      set -e
+      exec > >(tee -a /var/log/setup-tailscale.log) 2>&1  # Log all output
+      
+      echo "$(date): 🔧 Installing and configuring Tailscale..."
+      
+      # Install Tailscale
+      echo "$(date): 📦 Installing Tailscale..."
+      curl -fsSL https://tailscale.com/install.sh | sh
+      
+      # Check if Tailscale auth key is provided
+      if [ -n "${TAILSCALE_AUTH_KEY}" ]; then
+        echo "$(date): 🔑 Authenticating Tailscale with provided auth key..."
+        sudo tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --advertise-routes=10.0.0.0/24 --accept-routes
+        
+        # Enable IP forwarding for subnet routing
+        echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.conf
+        echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.conf
+        sudo sysctl -p
+        
+        echo "✅ Tailscale connected and configured as subnet router"
+        echo "🌐 This node advertises routes for: 10.0.0.0/24"
+        echo "🌐 This node accepts routes from other Tailscale nodes"
+        
+        # Get Tailscale status
+        TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "Unknown")
+        echo "🔧 Tailscale IP: $TAILSCALE_IP"
+        
+        # Configure Tailscale Funnel if enabled
+        if [ "${TAILSCALE_FUNNEL_ENABLED}" = "true" ]; then
+          echo "$(date): 🌐 Configuring Tailscale Funnel for multiple services..."
+          
+          # Get Tailscale hostname
+          TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+          
+          if [ -n "$TAILSCALE_HOSTNAME" ] && [ "$TAILSCALE_HOSTNAME" != "null" ]; then
+            echo "$(date): 🔧 Setting up Funnel services at https://$TAILSCALE_HOSTNAME"
+            
+            # Configure Tailscale serve for multiple services
+            # Harbor on default HTTPS port (443)
+            sudo tailscale serve https / http://localhost:80
+            
+            # Rancher GUI on port 8443
+            sudo tailscale serve https:8443 https://k8s.${RANCHER_DOMAIN}:443
+            
+            # APISIX Dashboard on port 9000
+            sudo tailscale serve https:9000 http://localhost:9000
+            
+            # Enable Funnel for all configured ports
+            sudo tailscale funnel 443 on
+            sudo tailscale funnel 8443 on
+            sudo tailscale funnel 9000 on
+            
+            echo "✅ Tailscale Funnel configured for multiple services"
+            echo "🌐 Services accessible via:"
+            echo "   • Harbor Container Registry:    https://$TAILSCALE_HOSTNAME"
+            echo "   • Rancher Kubernetes GUI:       https://$TAILSCALE_HOSTNAME:8443"
+            echo "   • APISIX API Gateway Dashboard: https://$TAILSCALE_HOSTNAME:9000"
+            echo "🔐 All services provide secure access from anywhere on the internet"
+            echo "⚠️  Note: Funnel traffic goes through Tailscale's infrastructure"
+            
+          else
+            echo "⚠️  Could not determine Tailscale hostname for Funnel setup"
+          fi
+        else
+          echo "ℹ️  Tailscale Funnel not enabled (set TAILSCALE_FUNNEL_ENABLED=true to enable)"
+        fi
+        
+      else
+        echo "⚠️  No Tailscale auth key provided"
+        echo "ℹ️  Tailscale installed but not connected"
+        echo "ℹ️  To connect manually:"
+        echo "   1. Run: sudo tailscale up"
+        echo "   2. Follow the authentication URL"
+        echo "   3. Optionally enable subnet routing: sudo tailscale up --advertise-routes=10.0.0.0/24"
+      fi
+      
+      # Create tailscale management script
+      chmod +x /usr/local/bin/tailscale-manage
+      
+      echo "✅ Tailscale setup completed"
+
+  - path: /usr/local/bin/tailscale-manage
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      case "$1" in
+        status)
+          echo "=== Tailscale Status ==="
+          tailscale status
+          echo ""
+          echo "=== Tailscale IP ==="
+          tailscale ip -4 2>/dev/null || echo "Not connected"
+          echo ""
+          echo "=== Route Advertisement ==="
+          tailscale status --json | jq -r '.Self.PrimaryRoutes[]? // "No routes advertised"'
+          echo ""
+          echo "=== Available Services ==="
+          if tailscale funnel status >/dev/null 2>&1; then
+            TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+            echo "  • Harbor Registry:       https://$TAILSCALE_HOSTNAME"
+            echo "  • Rancher GUI:           https://$TAILSCALE_HOSTNAME:8843"
+            echo "  • APISIX Dashboard:      https://$TAILSCALE_HOSTNAME:9000"
+          else
+            echo "  Funnel not enabled - services accessible via Tailscale network only"
+          fi
+          ;;
+        services)
+          echo "=== Available Services ==="
+          echo "• Harbor Container Registry"
+          echo "  Internal: http://utility-node.internal.lan"
+          echo "  External: https://harbor.${RANCHER_DOMAIN}"
+          if tailscale status >/dev/null 2>&1; then
+            TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+            echo "  Tailscale: https://$TAILSCALE_HOSTNAME"
+          fi
+          echo ""
+          echo "• Rancher Kubernetes Management"
+          echo "  Internal: https://k8s.${RANCHER_DOMAIN}:443"
+          if tailscale status >/dev/null 2>&1; then
+            TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+            echo "  Tailscale: https://$TAILSCALE_HOSTNAME:8443"
+          fi
+          echo ""
+          echo "• APISIX API Gateway Dashboard"
+          echo "  Internal: http://localhost:9000"
+          if tailscale status >/dev/null 2>&1; then
+            TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+            echo "  Tailscale: https://$TAILSCALE_HOSTNAME:9000"
+          fi
+          ;;
+        up)
+          if [ -n "$2" ]; then
+            echo "Connecting Tailscale with auth key..."
+            sudo tailscale up --authkey="$2" --advertise-routes=10.0.0.0/24 --accept-routes
+          else
+            echo "Connecting Tailscale (will need browser authentication)..."
+            sudo tailscale up --advertise-routes=10.0.0.0/24 --accept-routes
+          fi
+          ;;
+        down)
+          echo "Disconnecting Tailscale..."
+          sudo tailscale down
+          ;;
+        routes)
+          echo "=== Advertised Routes ==="
+          tailscale status --json | jq -r '.Self.PrimaryRoutes[]? // "No routes advertised"'
+          echo ""
+          echo "=== Accepted Routes ==="
+          tailscale status --json | jq -r '.Peer[].PrimaryRoutes[]? // "No accepted routes"'
+          ;;
+        funnel-status)
+          echo "=== Tailscale Funnel Status ==="
+          tailscale funnel status 2>/dev/null || echo "Funnel not configured or not available"
+          ;;
+        funnel-enable)
+          TAILSCALE_HOSTNAME=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+          if [ -n "$TAILSCALE_HOSTNAME" ] && [ "$TAILSCALE_HOSTNAME" != "null" ]; then
+            echo "Enabling Tailscale Funnel for all services..."
+            
+            # Harbor on 443
+            sudo tailscale serve https / http://localhost:80
+            
+            # Rancher on 8443
+            sudo tailscale serve https:8443 https://k8s.${RANCHER_DOMAIN}:443
+            
+            # APISIX on 9000
+            sudo tailscale serve https:9000 http://localhost:9000
+            
+            # Enable Funnel for all ports
+            sudo tailscale funnel 443 on
+            sudo tailscale funnel 8443 on
+            sudo tailscale funnel 9000 on
+            
+            echo "✅ Funnel enabled for all services"
+            echo "🌐 Services accessible via:"
+            echo "   • Harbor:    https://$TAILSCALE_HOSTNAME"
+            echo "   • Rancher:   https://$TAILSCALE_HOSTNAME:8443"
+            echo "   • APISIX:    https://$TAILSCALE_HOSTNAME:9000"
+          else
+            echo "❌ Could not determine Tailscale hostname"
+          fi
+          ;;
+        funnel-disable)
+          echo "Disabling Tailscale Funnel..."
+          sudo tailscale funnel 443 off
+          sudo tailscale funnel 8443 off
+          sudo tailscale funnel 9000 off
+          sudo tailscale serve --remove https
+          sudo tailscale serve --remove https:443
+          sudo tailscale serve --remove https:8443
+          sudo tailscale serve --remove https:9000
+          echo "✅ Funnel disabled for all services"
+          ;;
+        logs)
+          echo "=== Tailscale Service Logs ==="
+          journalctl -u tailscaled --no-pager -n 50
+          ;;
+        *)
+          echo "Tailscale Management Script for Multi-Service Funnel"
+          echo ""
+          echo "Usage: $0 {status|services|up [auth-key]|down|routes|funnel-status|funnel-enable|funnel-disable|logs}"
+          echo ""
+          echo "Commands:"
+          echo "  status         - Show Tailscale connection status and service URLs"
+          echo "  services       - Show detailed service information with all access methods"
+          echo "  up [auth-key]  - Connect to Tailscale (optionally with auth key)"
+          echo "  down           - Disconnect from Tailscale"
+          echo "  routes         - Show route advertisement status"
+          echo "  funnel-status  - Show Tailscale Funnel status"
+          echo "  funnel-enable  - Enable Tailscale Funnel for Harbor, Rancher, and APISIX"
+          echo "  funnel-disable - Disable Tailscale Funnel"
+          echo "  logs           - Show recent Tailscale service logs"
+          echo ""
+          echo "Services accessible via Tailscale Funnel:"
+          echo "  • Harbor Container Registry (Port 443)"
+          echo "  • Rancher Kubernetes Management GUI (Port 8443)"
+          echo "  • APISIX API Gateway Dashboard (Port 9000)"
+          echo ""
+          echo "Examples:"
+          echo "  $0 status                           # Check connection and service URLs"
+          echo "  $0 services                         # Show all access methods for each service"
+          echo "  $0 up tskey-auth-xxxxx             # Connect with auth key"  
+          echo "  $0 funnel-enable                   # Enable public access to all services"
+          exit 1
+          ;;
+      esac
 
   - path: /opt/harbor/harbor.yml.template
     permissions: '0644'
