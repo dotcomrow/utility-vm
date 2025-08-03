@@ -8,11 +8,6 @@ variable "utility_cpu_sockets" {
   default = 1
 }
 
-variable "existing_harbor_disk_id" {
-  description = "ID of existing Harbor disk to reuse (optional). Format: 'datastore:vm-XXX-disk-Y'"
-  type        = string
-  default     = "Cluster:vm-105-disk-1"
-}
 
 # Upload cloud-init configuration to Proxmox as a snippet
 resource "proxmox_virtual_environment_file" "utility_cloud_init_config" {
@@ -104,19 +99,8 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
     cache     = "unsafe"
   }
 
-  disk {
-    datastore_id = var.VM_DISK_STORAGE
-    interface    = "scsi1"           # Secondary disk for Harbor storage
-    iothread     = true              # ✅ Improve I/O parallelism
-    discard      = "on"
-    size         = var.existing_harbor_disk_id != "" ? null : 100  # Only set size for new disks
-    file_format  = "raw"             # ✅ Best raw performance
-    backup       = false             # ✅ Exclude from Proxmox backups (Harbor data can be regenerated)
-    file_id      = var.existing_harbor_disk_id != "" ? var.existing_harbor_disk_id : null  # Use existing disk if provided
-    
-    # Additional protection for existing disks
-    # Note: When using existing disk, Terraform won't try to recreate it
-  }
+  scsi1 = "/dev/ClusterStorage/harbor-data"
+
 
   scsi_hardware = "virtio-scsi-single"  # ✅ Enable for efficient single queue
 
