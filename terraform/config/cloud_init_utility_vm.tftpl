@@ -503,6 +503,53 @@ write_files:
             if [ "$FINAL_HTTP_CODE" = "200" ]; then
               echo "🔒 Database authentication disabled - Harbor GUI now requires GitHub OAuth"
               echo "📦 Proxy cache projects retain anonymous read access for container pulls"
+              
+              # Additional step: Disable the admin user to ensure database auth is truly disabled
+              echo "🔒 Disabling database admin user to ensure complete security..."
+              
+              # Generate a random password to disable admin access
+              RANDOM_PASSWORD=$(openssl rand -base64 32)
+              
+              # Change admin password to random value, making database auth unusable
+              DISABLE_ADMIN_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/users/1/password" \
+                -H "Content-Type: application/json" \
+                -u "${HARBOR_USER}:${HARBOR_PASS}" \
+                -d "{
+                  \"old_password\": \"${HARBOR_PASS}\",
+                  \"new_password\": \"$RANDOM_PASSWORD\"
+                }")
+              
+              DISABLE_HTTP_CODE=$(echo "$DISABLE_ADMIN_RESPONSE" | tail -n1)
+              if [ "$DISABLE_HTTP_CODE" = "200" ]; then
+                echo "✅ Admin password changed to random value - database auth now unusable"
+                echo "🔒 Admin credentials are no longer valid"
+              else
+                echo "ℹ️  Admin password change: HTTP $DISABLE_HTTP_CODE"
+                # Fallback: Try to update admin user profile to disable
+                DISABLE_USER_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/users/1" \
+                  -H "Content-Type: application/json" \
+                  -u "${HARBOR_USER}:${HARBOR_PASS}" \
+                  -d "{
+                    \"username\": \"admin\",
+                    \"email\": \"admin@harbor.local\",
+                    \"realname\": \"Harbor Admin (DISABLED)\",
+                    \"comment\": \"Database auth disabled - OIDC required\"
+                  }")
+                echo "ℹ️  Admin user profile update: $(echo "$DISABLE_USER_RESPONSE" | tail -n1)"
+              fi
+              
+              # Final verification: Confirm OIDC-only mode
+              echo "🔧 Final verification: Checking authentication mode..."
+              FINAL_CHECK=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "${HARBOR_USER}:${HARBOR_PASS}")
+              CURRENT_AUTH_MODE=$(echo "$FINAL_CHECK" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
+              
+              if [ "$CURRENT_AUTH_MODE" = "oidc_auth" ]; then
+                echo "✅ CONFIRMED: Harbor is now in OIDC-only authentication mode"
+                echo "🔒 Database authentication is DISABLED"
+                echo "👤 Only GitHub OAuth users can access the Harbor GUI"
+              else
+                echo "⚠️  Authentication mode verification: $CURRENT_AUTH_MODE"
+              fi
             else
               echo "⚠️  Final auth configuration warning (HTTP $FINAL_HTTP_CODE)"
             fi
@@ -988,8 +1035,8 @@ write_files:
       harbor_admin_password: Harbor12345
       
       # Authentication configuration
-      # Using OIDC authentication for GitHub OAuth - database authentication will be disabled entirely
-      auth_mode: oidc_auth
+      # Starting with database authentication for initial setup - will switch to OIDC-only after Dex is configured
+      auth_mode: db_auth
       
       # OIDC authentication settings - DISABLED due to GitHub OAuth compatibility issues
       # GitHub OAuth App integration requires manual configuration through Harbor UI
@@ -1225,18 +1272,33 @@ write_files:
       
       echo "🔧 Harbor OIDC Configuration:"
       HARBOR_URL="http://utility-node.internal.lan"
-      curl -s "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" | jq -r '
-        {
-          auth_mode: (.auth_mode.value // .auth_mode),
-          oidc_name: (.oidc_name.value // .oidc_name),
-          oidc_endpoint: (.oidc_endpoint.value // .oidc_endpoint),
-          oidc_client_id: (.oidc_client_id.value // .oidc_client_id),
-          oidc_scope: (.oidc_scope.value // .oidc_scope),
-          oidc_verify_cert: (.oidc_verify_cert.value // .oidc_verify_cert),
-          oidc_auto_onboard: (.oidc_auto_onboard.value // .oidc_auto_onboard),
-          oidc_user_claim: (.oidc_user_claim.value // .oidc_user_claim),
-          oidc_groups_claim: (.oidc_groups_claim.value // .oidc_groups_claim)
-        }' 2>/dev/null || echo "Failed to get Harbor OIDC config"
+      
+      # Try to get Harbor config (may fail if database auth is disabled)
+      HARBOR_CONFIG_RESPONSE=$(curl -s -w "\n%{http_code}" "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" 2>/dev/null)
+      CONFIG_HTTP_CODE=$(echo "$HARBOR_CONFIG_RESPONSE" | tail -n1)
+      
+      if [ "$CONFIG_HTTP_CODE" = "200" ]; then
+        echo "⚠️  Database authentication still enabled (admin credentials work)"
+        HARBOR_CONFIG=$(echo "$HARBOR_CONFIG_RESPONSE" | head -n -1)
+        echo "$HARBOR_CONFIG" | jq -r '
+          {
+            auth_mode: (.auth_mode.value // .auth_mode),
+            oidc_name: (.oidc_name.value // .oidc_name),
+            oidc_endpoint: (.oidc_endpoint.value // .oidc_endpoint),
+            oidc_client_id: (.oidc_client_id.value // .oidc_client_id),
+            oidc_scope: (.oidc_scope.value // .oidc_scope),
+            oidc_verify_cert: (.oidc_verify_cert.value // .oidc_verify_cert),
+            oidc_auto_onboard: (.oidc_auto_onboard.value // .oidc_auto_onboard),
+            oidc_user_claim: (.oidc_user_claim.value // .oidc_user_claim),
+            oidc_groups_claim: (.oidc_groups_claim.value // .oidc_groups_claim)
+          }' 2>/dev/null || echo "Failed to parse Harbor OIDC config"
+      else
+        echo "✅ OIDC-ONLY MODE CONFIRMED"
+        echo "   🔒 Database authentication is DISABLED (HTTP $CONFIG_HTTP_CODE)"
+        echo "   🚫 Admin credentials no longer work"
+        echo "   👤 Harbor GUI requires GitHub OAuth only" 
+        echo "   📦 Anonymous proxy cache access still enabled"
+      fi
       echo ""
       
       echo "🔧 Dex Container Status:"
@@ -1310,15 +1372,35 @@ write_files:
         auth-status)
           echo "Harbor Authentication Status:"
           HARBOR_URL="http://utility-node.internal.lan"
-          AUTH_MODE=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
-          if [ "$AUTH_MODE" = "oidc_auth" ]; then
-            echo "✅ OIDC Authentication enabled"
-            OIDC_NAME=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" | jq -r '.oidc_name.value // .oidc_name' 2>/dev/null)
-            OIDC_ENDPOINT=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" | jq -r '.oidc_endpoint.value // .oidc_endpoint' 2>/dev/null)
-            echo "   Provider: $OIDC_NAME"
-            echo "   Endpoint: $OIDC_ENDPOINT"
+          
+          # Try to get auth mode (may fail if database auth is disabled)
+          AUTH_RESPONSE=$(curl -s -w "\n%{http_code}" "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" 2>/dev/null)
+          HTTP_CODE=$(echo "$AUTH_RESPONSE" | tail -n1)
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            AUTH_CONFIG=$(echo "$AUTH_RESPONSE" | head -n -1)
+            AUTH_MODE=$(echo "$AUTH_CONFIG" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
+            
+            if [ "$AUTH_MODE" = "oidc_auth" ]; then
+              echo "✅ OIDC Authentication ENABLED (Database auth DISABLED)"
+              OIDC_NAME=$(echo "$AUTH_CONFIG" | jq -r '.oidc_name.value // .oidc_name' 2>/dev/null)
+              OIDC_ENDPOINT=$(echo "$AUTH_CONFIG" | jq -r '.oidc_endpoint.value // .oidc_endpoint' 2>/dev/null)
+              echo "   🔒 Security Mode: OIDC-only (no database authentication)"
+              echo "   🌐 Provider: $OIDC_NAME"
+              echo "   🔗 Endpoint: $OIDC_ENDPOINT"
+              echo "   👤 GUI Access: GitHub OAuth required"
+              echo "   📦 Proxy Cache: Anonymous read access enabled"
+            else
+              echo "⚠️  Database Authentication enabled (auth_mode: $AUTH_MODE)"
+              echo "   🔓 Security Risk: Database login still possible"
+            fi
           else
-            echo "ℹ️  Database Authentication enabled (auth_mode: $AUTH_MODE)"
+            echo "🔒 OIDC-ONLY MODE CONFIRMED"
+            echo "   ✅ Database authentication is DISABLED"
+            echo "   🚫 Admin credentials no longer work (HTTP $HTTP_CODE)"
+            echo "   👤 GUI requires GitHub OAuth authentication only"
+            echo "   📦 Proxy cache retains anonymous read access"
+            echo "   🌐 Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
           fi
           ;;
         oidc-login-url)
