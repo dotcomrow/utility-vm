@@ -1063,18 +1063,58 @@ write_files:
         echo "Waiting for Tailscale to be connected..."
         sleep 5
       done
+
+      echo "Installing HAProxy for Tailscale serve..."
+      sudo apt-get update
+      sudo apt-get install -y haproxy
+
+      cat > /etc/haproxy/haproxy.cfg <<EOF
+      global
+          daemon
+          maxconn 4096
+
+      defaults
+          mode http
+          timeout connect 5000ms
+          timeout client 50000ms
+          timeout server 50000ms
+
+      frontend https_frontend
+          bind *:8080
+          mode http
+          
+          # Route based on Host header from pfSense
+          acl is_harbor hdr(host) -i harbor.suncoast.systems
+          acl is_rancher hdr(host) -i k8s.suncoast.systems
+          acl is_gateway hdr(host) -i gateway-manager.suncoast.systems
+          
+          # Backend routing
+          use_backend harbor_backend if is_harbor
+          use_backend rancher_backend if is_rancher
+          use_backend gateway_backend if is_gateway
+
+      backend harbor_backend
+          mode http
+          server harbor localhost:80 check
+
+      backend rancher_backend
+          mode https
+          server rancher 10.0.0.110:443 check ssl verify none
+
+      backend gateway_backend
+          mode http
+          server gateway 10.0.0.111:80 check
+
+      default_backend harbor_backend
+      EOF
+
+      sudo systemctl enable haproxy
+      sudo systemctl start haproxy
       
       echo "✅ Tailscale is connected"
       
       # Configure serve for each service with custom domains
-      echo "🔧 Setting up harbor.${RANCHER_DOMAIN} -> localhost:80"
-      sudo tailscale serve --bg --https=443 --hostname=harbor.${RANCHER_DOMAIN} http://localhost:80
-      
-      echo "🔧 Setting up k8s.${RANCHER_DOMAIN} -> k8s.${RANCHER_DOMAIN}:443"  
-      sudo tailscale serve --bg --https=443 --hostname=k8s.${RANCHER_DOMAIN} https://k8s.${RANCHER_DOMAIN}:443
-      
-      echo "🔧 Setting up gateway-manager.${RANCHER_DOMAIN} -> gateway-manager.${RANCHER_DOMAIN}:443"
-      sudo tailscale serve --bg --https=443 --hostname=gateway-manager.${RANCHER_DOMAIN} https://gateway-manager.${RANCHER_DOMAIN}:443
+      sudo tailscale serve --bg --https=443 http://localhost:8080
       
       # Enable Tailscale Funnel for public internet access
       echo "🌐 Enabling Tailscale Funnel for public internet access..."
