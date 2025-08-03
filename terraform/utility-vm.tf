@@ -100,12 +100,13 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
   }
 
   disk {
-    datastore_id = "Cluster"
-    file_id      = "Cluster:vm-105-disk-2"
-    interface    = "scsi1"
-    iothread     = true
+    datastore_id = var.VM_DISK_STORAGE
+    interface    = "scsi1"           # Secondary disk for Harbor storage
+    iothread     = true              # ✅ Improve I/O parallelism
     discard      = "on"
-    cache        = "unsafe"
+    size         = 100
+    file_format  = "raw"             # ✅ Best raw performance
+    backup       = false             # ✅ Exclude from Proxmox backups (Harbor data can be regenerated)
   }
 
   scsi_hardware = "virtio-scsi-single"  # ✅ Enable for efficient single queue
