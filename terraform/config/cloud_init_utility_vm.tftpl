@@ -1166,7 +1166,7 @@ write_files:
       
       echo "2. Testing Harbor's ability to reach Dex..."
       # This tests from Harbor's perspective (through the external URL)
-      HARBOR_TO_DEX_TEST=$(docker exec -it $(docker ps -q --filter "name=harbor-core") curl -s -w "%{http_code}" "https://harbor-dex.${RANCHER_DOMAIN}/.well-known/openid-configuration" 2>/dev/null | tail -c 3)
+      HARBOR_TO_DEX_TEST=$(docker exec -it $(docker ps -q --filter "name=harbor-core") curl -s -w "%%{http_code}" "https://harbor-dex.${RANCHER_DOMAIN}/.well-known/openid-configuration" 2>/dev/null | tail -c 3)
       if [ "$HARBOR_TO_DEX_TEST" = "200" ]; then
         echo "✅ Harbor can reach Dex via external URL"
       else
@@ -1193,7 +1193,7 @@ write_files:
       
       echo "4. Testing the complete OIDC login URL..."
       LOGIN_URL="https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
-      LOGIN_RESPONSE=$(curl -s -w "%{http_code}" -o /dev/null "$LOGIN_URL" 2>/dev/null)
+      LOGIN_RESPONSE=$(curl -s -w "%%{http_code}" -o /dev/null "$LOGIN_URL" 2>/dev/null)
       if [ "$LOGIN_RESPONSE" = "302" ] || [ "$LOGIN_RESPONSE" = "200" ]; then
         echo "✅ Harbor OIDC login endpoint accessible (HTTP $LOGIN_RESPONSE)"
         echo "   URL: $LOGIN_URL"
