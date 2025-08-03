@@ -190,17 +190,6 @@ write_files:
 
       # Harbor installation and configuration
       
-      # Check if there's existing Harbor data on the persistent disk
-      EXISTING_DATA=false
-      if [ -f "/data/harbor/database/data/postgresql.conf" ] || [ -f "/data/harbor/registry/config.yml" ]; then
-        EXISTING_DATA=true
-        echo "� Existing Harbor data detected on persistent disk"
-        echo "� Will install Harbor and preserve existing data"
-      else
-        echo "🆕 Fresh Harbor installation - no existing data found"
-      fi
-      
-      # Always install Harbor (binaries go on OS disk, data stays on persistent disk)
       echo "📦 Installing Harbor ${HARBOR_VERSION}..."
       
       # Create harbor directories
@@ -215,66 +204,22 @@ write_files:
       
       # Create Harbor configuration
       cd /opt/harbor
+      cp harbor.yml.tmpl harbor.yml
       
-      if [ "$EXISTING_DATA" = true ] && [ -f "/data/harbor/harbor.yml.backup" ]; then
-        echo "🔧 Restoring existing Harbor configuration from persistent disk"
-        cp /data/harbor/harbor.yml.backup /opt/harbor/harbor.yml
-      else
-        echo "🔧 Creating fresh Harbor configuration"
-        cp harbor.yml.tmpl harbor.yml
-        
-        # Use the pre-created template and configure Harbor
-        HARBOR_HOSTNAME="$(hostname).internal.lan"
-        cp /opt/harbor/harbor.yml.template /opt/harbor/harbor.yml
-        
-        # Replace the hostname placeholder
-        sed -i "s/HOSTNAME_PLACEHOLDER/$${HARBOR_HOSTNAME}/g" /opt/harbor/harbor.yml
-        
-        # Backup the configuration for future use
-        cp /opt/harbor/harbor.yml /data/harbor/harbor.yml.backup
-      fi
+      # Use the pre-created template and configure Harbor
+      HARBOR_HOSTNAME="$(hostname).internal.lan"
+      cp /opt/harbor/harbor.yml.template /opt/harbor/harbor.yml
+      
+      # Replace the hostname placeholder
+      sed -i "s/HOSTNAME_PLACEHOLDER/$${HARBOR_HOSTNAME}/g" /opt/harbor/harbor.yml
       
       # Create required directories for Harbor logging on dedicated disk
       mkdir -p /data/harbor/logs/jobs
       mkdir -p /data/harbor/logs
       
-      # Install/Configure Harbor
-      if [ "$EXISTING_DATA" = true ]; then
-        echo "🚀 Starting Harbor with existing data..."
-        # For existing data, just prepare and start (don't run install.sh which would reset data)
-        /opt/harbor/prepare
-        cd /opt/harbor
-        docker-compose up -d
-      else
-        echo "🚀 Installing fresh Harbor..."
-        /opt/harbor/install.sh --with-trivy
-      fi
-      
-      # Wait for Harbor to start
-      echo "⏳ Waiting for Harbor to start..."
-      sleep 30
-      
-      # Check if proxy cache projects already exist (for existing Harbor data)
-      echo "🔧 Checking for existing proxy cache projects..."
-      EXISTING_PROJECTS=$(curl -s "$HARBOR_URL/api/v2.0/projects" -u "${HARBOR_USER}:${HARBOR_PASS}" | jq -r '.[].name' 2>/dev/null || echo "")
-      
-      if echo "$EXISTING_PROJECTS" | grep -q "dockerhub\|gcr\|quay"; then
-        echo "✅ Existing proxy cache projects detected - skipping project creation"
-        echo "📦 Found existing projects: $(echo "$EXISTING_PROJECTS" | tr '\n' ' ')"
-      else
-        echo "🔧 Creating proxy cache projects for popular registries..."
-        # Create proxy cache projects for popular registries
-        create_proxy_project "dockerhub" "https://registry-1.docker.io" "docker-hub"
-        create_proxy_project "gcr" "https://gcr.io" "google-gcr"
-        create_proxy_project "quay" "https://quay.io" "quay-io"
-        create_proxy_project "ghcr" "https://ghcr.io" "github-container-registry"
-        create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
-        create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
-        create_proxy_project "nvidia" "https://nvcr.io" "nvidia-container-registry"
-        echo "✅ Proxy cache projects created successfully"
-      fi
-      
-      # Common Harbor setup - applies to both fresh and existing installations
+      # Install Harbor
+      echo "🚀 Installing Harbor..."
+      /opt/harbor/install.sh --with-trivy
       
       # Wait for Harbor to start
       echo "⏳ Waiting for Harbor to start..."
@@ -429,101 +374,16 @@ write_files:
         sleep 2  # Brief pause between projects
       }
       
-      # Check and fix jobservice if needed
-      echo "🔧 Checking Harbor jobservice health..."
-      cd /opt/harbor
+      # Create proxy cache projects for popular registries
+      create_proxy_project "dockerhub" "https://registry-1.docker.io" "docker-hub"
+      create_proxy_project "gcr" "https://gcr.io" "google-gcr"
+      create_proxy_project "quay" "https://quay.io" "quay-io"
+      create_proxy_project "ghcr" "https://ghcr.io" "github-container-registry"
+      create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
+      create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
+      create_proxy_project "nvidia" "https://nvcr.io" "nvidia-container-registry"
       
-      # Wait for all Harbor services to be ready
-      echo "⏳ Waiting for Harbor services to be ready..."
-      while true; do
-        if docker-compose ps | grep -q "Up" && docker-compose ps | grep -q "jobservice"; then
-          echo "✅ Harbor services are running"
-          break
-        fi
-        echo "Waiting for Harbor services..."
-        sleep 10
-      done
-      
-      # Check jobservice specifically
-      JOBSERVICE_STATUS=$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
-      if [ "$JOBSERVICE_STATUS" -eq 0 ]; then
-        echo "⚠️  Jobservice not running properly, restarting Harbor..."
-        docker-compose down
-        sleep 10
-        docker-compose up -d
-        sleep 30
-        
-        # Verify jobservice again
-        RETRY_STATUS=$(docker ps --filter "name=jobservice" --format "table {{.Status}}" | grep -c "Up" || echo "0")
-        if [ "$RETRY_STATUS" -eq 0 ]; then
-          echo "❌ Jobservice still failing, checking logs..."
-          docker-compose logs | grep jobservice
-          echo "Attempting jobservice container restart..."
-          JOBSERVICE_CONTAINER=$(docker ps -a --filter "name=jobservice" --format "{{.Names}}" | head -1)
-          if [ ! -z "$JOBSERVICE_CONTAINER" ]; then
-            docker restart "$JOBSERVICE_CONTAINER"
-            sleep 15
-          else
-            echo "❌ Could not find jobservice container to restart"
-          fi
-        else
-          echo "✅ Jobservice recovered after restart"
-        fi
-      else
-        echo "✅ Jobservice is running properly"
-      fi
-      
-      # Configure Harbor as pull-through cache
-      echo "🔧 Configuring Harbor as pull-through cache..."
-      
-      # Create proxy cache projects for common registries
-      HARBOR_HOST="localhost"
-      HARBOR_URL="http://$HARBOR_HOST"
-      export HARBOR_USER=${HARBOR_USER}
-      export HARBOR_PASS=${HARBOR_PASS}
-
-      
-      # Wait for Harbor API to be available with better timing
-      echo "⏳ Waiting for Harbor API to be fully ready..."
-      sleep 60  # Give Harbor more time to fully initialize
-      
-      until curl -f -s "$HARBOR_URL/api/v2.0/systeminfo" > /dev/null; do
-        echo "Waiting for Harbor API to be available..."
-        sleep 15
-      done
-      
-      # Wait additional time for Harbor to be fully operational
-      echo "✅ Harbor API available, waiting for full initialization..."
-      sleep 30
-      
-      # Check if there's existing Harbor data on the persistent disk
-      echo "🔧 Checking for existing proxy cache projects..."
-      EXISTING_PROJECTS=$(curl -s "$HARBOR_URL/api/v2.0/projects" -u "${HARBOR_USER}:${HARBOR_PASS}" | jq -r '.[].name' 2>/dev/null || echo "")
-      
-      if echo "$EXISTING_PROJECTS" | grep -q "dockerhub\|gcr\|quay"; then
-        echo "✅ Existing proxy cache projects detected - skipping project creation"
-        echo "📦 Found existing projects: $(echo "$EXISTING_PROJECTS" | tr '\n' ' ')"
-      else
-        echo "🔧 Creating proxy cache projects for popular registries..."
-        # Create proxy cache projects for popular registries
-        create_proxy_project "dockerhub" "https://registry-1.docker.io" "docker-hub"
-        create_proxy_project "gcr" "https://gcr.io" "google-gcr"
-        create_proxy_project "quay" "https://quay.io" "quay-io"
-        create_proxy_project "ghcr" "https://ghcr.io" "github-container-registry"
-        create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
-        create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
-        create_proxy_project "nvidia" "https://nvcr.io" "nvidia-container-registry"
-        echo "✅ Proxy cache projects created successfully"
-      fi
-      
-      # Common Harbor setup - applies to both fresh and existing installations
-      
-      # Wait for Harbor to start
-      echo "⏳ Waiting for Harbor to start..."
-      sleep 30
-      
-      # Common completion messages for both existing and fresh installations
-      echo "✅ Harbor setup completed!"
+      echo "✅ Harbor installation completed!"
       echo "🌐 Harbor is available at: http://$HARBOR_HOST"
       echo "🌐 External Harbor URL: https://harbor.${RANCHER_DOMAIN}"
       echo "🔐 Harbor authentication: GitHub OAuth only (database auth disabled)"
@@ -535,7 +395,7 @@ write_files:
       echo ""
       echo "🔧 Use 'harbor-manage' command to manage Harbor service"
       echo ""
-      echo "📋 Available proxy cache projects:"
+      echo "📋 Proxy cache projects created:"
       echo "  - dockerhub (Docker Hub): $HARBOR_HOST/dockerhub/"
       echo "  - gcr (Google Container Registry): $HARBOR_HOST/gcr/"
       echo "  - quay (Quay.io): $HARBOR_HOST/quay/"
@@ -557,80 +417,47 @@ write_files:
         if /usr/local/bin/setup-dex.sh; then
           echo "✅ Dex deployment successful"
           
-          # Configure Harbor to use Dex OIDC (only for fresh installations or if not already configured)
-          echo "🔧 Checking Harbor OIDC configuration..."
-          CURRENT_AUTH_MODE=$(curl -s "$HARBOR_URL/api/v2.0/configurations" -u "${HARBOR_USER}:${HARBOR_PASS}" | jq -r '.auth_mode.value // .auth_mode' 2>/dev/null)
+          # Configure Harbor to use Dex OIDC
+          echo "🔧 Configuring Harbor to use Dex OIDC..."
+          sleep 10  # Wait for Dex to be fully ready
           
-          if [ "$CURRENT_AUTH_MODE" != "oidc_auth" ] || [ "$EXISTING_DATA" = false ]; then
-            echo "🔧 Configuring Harbor to use Dex OIDC..."
-            sleep 10  # Wait for Dex to be fully ready
-            
-            # Get the Dex client secret that was generated
-            DEX_CLIENT_SECRET=$(grep "secret:" /opt/dex/config.yaml | sed "s/.*secret: '//" | sed "s/'.*//")
-            
-            # Configure Harbor OIDC settings and disable database authentication
-            OIDC_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
-              -H "Content-Type: application/json" \
-              -u "${HARBOR_USER}:${HARBOR_PASS}" \
-              -d "{
-                \"auth_mode\": \"oidc_auth\",
-                \"oidc_name\": \"GitHub via Dex\",
-                \"oidc_endpoint\": \"https://harbor-dex.${RANCHER_DOMAIN}\",
-                \"oidc_client_id\": \"harbor\",
-                \"oidc_client_secret\": \"$DEX_CLIENT_SECRET\",
-                \"oidc_scope\": \"openid email profile groups\",
-                \"oidc_verify_cert\": false,
-                \"oidc_auto_onboard\": true,
-                \"oidc_user_claim\": \"email\",
-                \"oidc_groups_claim\": \"groups\",
-                \"oidc_admin_group\": \"${GITHUB_ORG}:harbor_admins\",
-                \"project_creation_restriction\": \"adminonly\",
-                \"self_registration\": false,
-                \"read_only\": false,
-                \"auth_proxy_settings\": {
-                  \"endpoint\": \"\",
-                  \"token_review_endpoint\": \"\",
-                  \"skip_search\": false
-                }
-              }")
-            
-            OIDC_HTTP_CODE=$(echo "$OIDC_CONFIG_RESPONSE" | tail -n1)
-            OIDC_RESPONSE_BODY=$(echo "$OIDC_CONFIG_RESPONSE" | head -n -1)
-            
-            echo "🔧 Harbor OIDC Configuration Details:"
-            echo "  Request URL: $HARBOR_URL/api/v2.0/configurations"
-            echo "  HTTP Response Code: $OIDC_HTTP_CODE"
-            echo "  Dex Client Secret: $DEX_CLIENT_SECRET"
-            echo "  OIDC Endpoint: https://harbor-dex.${RANCHER_DOMAIN}"
-            
-            if [ "$OIDC_HTTP_CODE" = "200" ]; then
-              echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
-              echo "🔗 GitHub OIDC Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
-              echo "👤 Users can now login with their GitHub accounts"
-              
-              # Continue with additional OIDC configuration...
-              # [Rest of OIDC configuration logic here]
-            else
-              echo "⚠️  Harbor OIDC configuration failed (HTTP $OIDC_HTTP_CODE)"
-              echo "Response: $OIDC_RESPONSE_BODY"
-              echo "Harbor will continue using existing authentication"
-            fi
-          else
-            echo "✅ Harbor already configured for OIDC authentication"
-            echo "📦 Existing OIDC configuration preserved"
-          fi
-        else
-          echo "⚠️  Dex deployment failed, Harbor will use existing authentication"
-        fi
-      else
-        echo "⚠️  No GitHub OAuth credentials provided"
-        if [ "$EXISTING_DATA" = true ]; then
-          echo "📦 Preserving existing Harbor authentication configuration"
-        else
-          echo "🔒 SECURITY WARNING: Harbor GUI will be inaccessible without GitHub OAuth"
-          echo "📦 Proxy cache projects will still work with anonymous read access"
-        fi
-      fi
+          # Get the Dex client secret that was generated
+          DEX_CLIENT_SECRET=$(grep "secret:" /opt/dex/config.yaml | sed "s/.*secret: '//" | sed "s/'.*//")
+          
+          # Configure Harbor OIDC settings and disable database authentication
+          OIDC_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" -X PUT "$HARBOR_URL/api/v2.0/configurations" \
+            -H "Content-Type: application/json" \
+            -u "${HARBOR_USER}:${HARBOR_PASS}" \
+            -d "{
+              \"auth_mode\": \"oidc_auth\",
+              \"oidc_name\": \"GitHub via Dex\",
+              \"oidc_endpoint\": \"https://harbor-dex.${RANCHER_DOMAIN}\",
+              \"oidc_client_id\": \"harbor\",
+              \"oidc_client_secret\": \"$DEX_CLIENT_SECRET\",
+              \"oidc_scope\": \"openid email profile groups\",
+              \"oidc_verify_cert\": false,
+              \"oidc_auto_onboard\": true,
+              \"oidc_user_claim\": \"email\",
+              \"oidc_groups_claim\": \"groups\",
+              \"oidc_admin_group\": \"${GITHUB_ORG}:harbor_admins\",
+              \"project_creation_restriction\": \"adminonly\",
+              \"self_registration\": false,
+              \"read_only\": false,
+              \"auth_proxy_settings\": {
+                \"endpoint\": \"\",
+                \"token_review_endpoint\": \"\",
+                \"skip_search\": false
+              }
+            }")
+          
+          OIDC_HTTP_CODE=$(echo "$OIDC_CONFIG_RESPONSE" | tail -n1)
+          OIDC_RESPONSE_BODY=$(echo "$OIDC_CONFIG_RESPONSE" | head -n -1)
+          
+          echo "🔧 Harbor OIDC Configuration Details:"
+          echo "  Request URL: $HARBOR_URL/api/v2.0/configurations"
+          echo "  HTTP Response Code: $OIDC_HTTP_CODE"
+          echo "  Dex Client Secret: $DEX_CLIENT_SECRET"
+          echo "  OIDC Endpoint: https://harbor-dex.${RANCHER_DOMAIN}"
           
           if [ "$OIDC_HTTP_CODE" = "200" ]; then
             echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
@@ -1572,7 +1399,7 @@ write_files:
       HARBOR_URL="http://utility-node.internal.lan"
       
       # Try to get Harbor config (may fail if database auth is disabled)
-      HARBOR_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" 2>/dev/null)
+      HARBOR_CONFIG_RESPONSE=$(curl -s -w "\n%{http_code}" "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" 2>/dev/null)
       CONFIG_HTTP_CODE=$(echo "$HARBOR_CONFIG_RESPONSE" | tail -n1)
       
       if [ "$CONFIG_HTTP_CODE" = "200" ]; then
@@ -1672,7 +1499,7 @@ write_files:
           HARBOR_URL="http://utility-node.internal.lan"
           
           # Try to get auth mode (may fail if database auth is disabled)
-          AUTH_RESPONSE=$(curl -s -w "\n%%{http_code}" "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" 2>/dev/null)
+          AUTH_RESPONSE=$(curl -s -w "\n%{http_code}" "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" 2>/dev/null)
           HTTP_CODE=$(echo "$AUTH_RESPONSE" | tail -n1)
           
           if [ "$HTTP_CODE" = "200" ]; then
