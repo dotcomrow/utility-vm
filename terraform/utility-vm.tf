@@ -101,7 +101,7 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
 
   disk {
     datastore_id = "Cluster"
-    file_id      = "Cluster:harbor-data"
+    file_id      = "Cluster:vm-105-disk-2"
     interface    = "scsi1"
     iothread     = true
     discard      = "on"
