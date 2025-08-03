@@ -1399,7 +1399,7 @@ write_files:
       HARBOR_URL="http://utility-node.internal.lan"
       
       # Try to get Harbor config (may fail if database auth is disabled)
-      HARBOR_CONFIG_RESPONSE=$(curl -s -w "\n%{http_code}" "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" 2>/dev/null)
+      HARBOR_CONFIG_RESPONSE=$(curl -s -w "\n%%{http_code}" "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" 2>/dev/null)
       CONFIG_HTTP_CODE=$(echo "$HARBOR_CONFIG_RESPONSE" | tail -n1)
       
       if [ "$CONFIG_HTTP_CODE" = "200" ]; then
@@ -1499,7 +1499,7 @@ write_files:
           HARBOR_URL="http://utility-node.internal.lan"
           
           # Try to get auth mode (may fail if database auth is disabled)
-          AUTH_RESPONSE=$(curl -s -w "\n%{http_code}" "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" 2>/dev/null)
+          AUTH_RESPONSE=$(curl -s -w "\n%%{http_code}" "$HARBOR_URL/api/v2.0/configurations" -u "admin:Harbor12345" 2>/dev/null)
           HTTP_CODE=$(echo "$AUTH_RESPONSE" | tail -n1)
           
           if [ "$HTTP_CODE" = "200" ]; then
