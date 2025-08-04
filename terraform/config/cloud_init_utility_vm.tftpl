@@ -1095,6 +1095,11 @@ write_files:
           mode http
           default_backend gateway_external
 
+      frontend dex_proxy
+          bind 127.0.0.1:5556
+          mode http
+          default_backend dex_backend
+
       # Main frontend for domain-based routing
       frontend https_frontend
           bind *:8080
@@ -1110,25 +1115,33 @@ write_files:
           option httplog
           
           # Route based on Host header - more flexible matching
+          # IMPORTANT: Order matters! More specific domains must come BEFORE less specific ones
+          acl is_dex hdr(host) -i harbor-dex.suncoast.systems
           acl is_harbor hdr(host) -i harbor.suncoast.systems
           acl is_rancher hdr(host) -i k8s.suncoast.systems
           acl is_gateway hdr(host) -i gateway-manager.suncoast.systems
           
           # Also try matching with partial domain names in case of DNS issues
+          # IMPORTANT: Order matters! More specific partial matches must come BEFORE less specific ones
+          acl is_dex_partial hdr(host) -m sub -i harbor-dex
           acl is_harbor_partial hdr(host) -m sub -i harbor
           acl is_rancher_partial hdr(host) -m sub -i k8s
           acl is_gateway_partial hdr(host) -m sub -i gateway-manager
           
-          # Debug: Log which ACL matches
+          # Debug: Log which ACL matches (order matters - most specific first)
+          http-request set-header X-Debug-Dex "true" if is_dex
           http-request set-header X-Debug-Harbor "true" if is_harbor
           http-request set-header X-Debug-Rancher "true" if is_rancher
           http-request set-header X-Debug-Gateway "true" if is_gateway
-          http-request set-header X-Debug-Default "true" unless is_harbor or is_rancher or is_gateway
+          http-request set-header X-Debug-Default "true" unless is_dex or is_harbor or is_rancher or is_gateway
           
           # Backend routing based on Host header (exact match first, then partial)
+          # IMPORTANT: Order matters! Most specific domains must be checked FIRST
+          use_backend dex_backend if is_dex
           use_backend harbor_backend if is_harbor
           use_backend rancher_backend if is_rancher  
           use_backend gateway_backend if is_gateway
+          use_backend dex_backend if is_dex_partial
           use_backend harbor_backend if is_harbor_partial
           use_backend rancher_backend if is_rancher_partial
           use_backend gateway_backend if is_gateway_partial
@@ -1150,6 +1163,12 @@ write_files:
           # Add debugging header to identify which backend was used
           http-response set-header X-Backend "gateway_backend"
           server gateway 127.0.0.1:9000 check
+
+      backend dex_backend
+          mode http
+          # Add debugging header to identify which backend was used
+          http-response set-header X-Backend "dex_backend"
+          server dex localhost:5556 check
 
       # External service backends (proxied through local listeners)
       backend rancher_external
