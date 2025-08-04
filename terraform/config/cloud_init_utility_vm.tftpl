@@ -1072,40 +1072,76 @@ write_files:
       global
           daemon
           maxconn 4096
+          # Enable logging for debugging
+          log stdout local0 info
 
       defaults
           mode http
           timeout connect 5000ms
           timeout client 50000ms
           timeout server 50000ms
+          # Enable HTTP logging
+          option httplog
+          log global
 
+      # Local proxy listeners for external services (required by Tailscale serve/funnel)
+      frontend rancher_proxy
+          bind 127.0.0.1:8443
+          mode http
+          default_backend rancher_external
+
+      frontend gateway_proxy
+          bind 127.0.0.1:9000
+          mode http
+          default_backend gateway_external
+
+      # Main frontend for domain-based routing
       frontend https_frontend
           bind *:8080
           mode http
           
-          # Route based on Host header from pfSense
+          # Capture original Host header for logging and debugging
+          capture request header Host len 64
+          
+          # Route based on Host header - more flexible matching
           acl is_harbor hdr(host) -i harbor.suncoast.systems
           acl is_rancher hdr(host) -i k8s.suncoast.systems
           acl is_gateway hdr(host) -i gateway-manager.suncoast.systems
           
-          # Backend routing
+          # Also try matching with partial domain names in case of DNS issues
+          acl is_harbor_partial hdr(host) -m sub -i harbor
+          acl is_rancher_partial hdr(host) -m sub -i k8s
+          acl is_gateway_partial hdr(host) -m sub -i gateway-manager
+          
+          # Backend routing based on Host header (exact match first, then partial)
           use_backend harbor_backend if is_harbor
-          use_backend rancher_backend if is_rancher
+          use_backend rancher_backend if is_rancher  
           use_backend gateway_backend if is_gateway
+          use_backend harbor_backend if is_harbor_partial
+          use_backend rancher_backend if is_rancher_partial
+          use_backend gateway_backend if is_gateway_partial
+
 
       backend harbor_backend
           mode http
           server harbor localhost:80 check
 
       backend rancher_backend
-          mode https
-          server rancher 10.0.0.110:443 check ssl verify none
+          mode http
+          server rancher localhost:8443 check
 
       backend gateway_backend
           mode http
-          server gateway 10.0.0.111:80 check
+          server gateway localhost:9000 check
 
-      default_backend harbor_backend
+      # External service backends (proxied through local listeners)
+      backend rancher_external
+          mode http
+          server rancher 10.0.0.110:443 check ssl verify none
+
+      backend gateway_external
+          mode http
+          server gateway 10.0.0.111:80 check
       EOF
 
       sudo systemctl enable haproxy
@@ -1113,17 +1149,13 @@ write_files:
       
       echo "✅ Tailscale is connected"
       
-      # Configure serve for each service with custom domains
-      sudo tailscale serve --bg --https=443 http://localhost:8080
-      
-      # Enable Tailscale Funnel for public internet access
-      echo "🌐 Enabling Tailscale Funnel for public internet access..."
-      sudo tailscale funnel --bg --https=443 on
+      # Configure funnel for direct internet access (combines serve + funnel)
+      sudo tailscale funnel --bg --https=443 127.0.0.1:8080
       
       # Verify configuration
-      echo "🔧 Verifying Tailscale serve configuration..."
+      echo "🔧 Verifying Tailscale funnel configuration..."
       sleep 5
-      tailscale serve status || echo "Serve status not available yet"
+      tailscale funnel status || echo "Funnel status not available yet"
       
       echo "✅ Tailscale serve and funnel configured for ${RANCHER_DOMAIN} domains"
       echo "🌐 Services available via public internet (Tailscale Funnel):"
