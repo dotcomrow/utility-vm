@@ -1098,6 +1098,7 @@ write_files:
       # Main frontend for domain-based routing
       frontend https_frontend
           bind *:8080
+          bind :::8080
           mode http
           
           # Capture original Host header for logging and debugging
@@ -1165,7 +1166,14 @@ write_files:
       
       echo "✅ Tailscale is connected"
       
+      # Get Tailscale IPv6 address for logging
+      TAILSCALE_IPV6=$(tailscale ip -6)
+      TAILSCALE_IPV4=$(tailscale ip -4)
+      echo "🔧 Tailscale IPv6: $TAILSCALE_IPV6"
+      echo "🔧 Tailscale IPv4: $TAILSCALE_IPV4"
+      
       # Configure funnel for direct internet access (combines serve + funnel)
+      # Tailscale funnel handles the external access, HAProxy handles internal routing
       sudo tailscale funnel --bg --https=443 127.0.0.1:8080
       
       # Verify configuration
