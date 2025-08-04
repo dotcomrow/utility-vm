@@ -124,7 +124,8 @@ write_files:
       systemctl enable qemu-guest-agent
       systemctl start qemu-guest-agent
       systemctl daemon-reload
-      
+      systemctl stop haproxy
+      systemctl start haproxy
       echo "$(date): Initial setup completed successfully!"
 
   - path: /usr/local/bin/setup-utility.sh
