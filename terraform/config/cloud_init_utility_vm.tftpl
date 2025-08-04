@@ -1096,9 +1096,9 @@ write_files:
           default_backend gateway_external
 
       frontend dex_proxy
-          bind 127.0.0.1:5556
+          bind 127.0.0.1:5557
           mode http
-          default_backend dex_backend
+          default_backend dex_external
 
       # Main frontend for domain-based routing
       frontend https_frontend
@@ -1168,7 +1168,7 @@ write_files:
           mode http
           # Add debugging header to identify which backend was used
           http-response set-header X-Backend "dex_backend"
-          server dex localhost:5556 check
+          server dex 127.0.0.1:5557 check
 
       # External service backends (proxied through local listeners)
       backend rancher_external
@@ -1178,6 +1178,10 @@ write_files:
       backend gateway_external
           mode http
           server gateway 10.0.0.111:80 check
+
+      backend dex_external
+          mode http
+          server dex localhost:5556 check
       EOF
 
       sudo systemctl enable haproxy
