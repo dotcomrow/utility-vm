@@ -383,6 +383,7 @@ write_files:
       create_proxy_project "k8s-gcr" "https://k8s.gcr.io" "k8s-gcr-io"
       create_proxy_project "registry-k8s" "https://registry.k8s.io" "registry-k8s-io"
       create_proxy_project "nvidia" "https://nvcr.io" "nvidia-container-registry"
+      create_proxy_project "linkerd" "https://cr.l5d.io" "linkerd-container-registry"
       
       echo "✅ Harbor installation completed!"
       echo "🌐 Harbor is available at: http://$HARBOR_HOST"
@@ -404,6 +405,7 @@ write_files:
       echo "  - k8s-gcr (Kubernetes GCR): $HARBOR_HOST/k8s-gcr/"
       echo "  - registry-k8s (Kubernetes Registry): $HARBOR_HOST/registry-k8s/"
       echo "  - nvidia (NVIDIA Container Registry): $HARBOR_HOST/nvidia/"
+      echo "  - linkerd (Linkerd Container Registry): $HARBOR_HOST/linkerd/"
       echo ""
       echo "🚀 Configure your Kubernetes cluster to use Harbor as pull-through cache:"
       echo "  Example: docker pull $HARBOR_HOST/dockerhub/nginx:latest"
