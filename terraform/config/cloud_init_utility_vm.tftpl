@@ -434,7 +434,7 @@ write_files:
             -d "{
               \"auth_mode\": \"oidc_auth\",
               \"oidc_name\": \"GitHub via Dex\",
-              \"oidc_endpoint\": \"http://localhost:5556\",
+              \"oidc_endpoint\": \"http://10.0.0.200:5556\",
               \"oidc_client_id\": \"harbor\",
               \"oidc_client_secret\": \"$DEX_CLIENT_SECRET\",
               \"oidc_scope\": \"openid email profile groups\",
@@ -460,7 +460,7 @@ write_files:
           echo "  Request URL: $HARBOR_URL/api/v2.0/configurations"
           echo "  HTTP Response Code: $OIDC_HTTP_CODE"
           echo "  Dex Client Secret: $DEX_CLIENT_SECRET"
-          echo "  OIDC Endpoint: http://localhost:5556"
+          echo "  OIDC Endpoint: http://10.0.0.200:5556"
           
           if [ "$OIDC_HTTP_CODE" = "200" ]; then
             echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
@@ -1220,7 +1220,7 @@ write_files:
   - path: /opt/dex/config.yaml.template
     permissions: '0644'
     content: |
-      issuer: http://localhost:5556
+      issuer: http://10.0.0.200:5556
       
       storage:
         type: sqlite3
@@ -1289,7 +1289,7 @@ write_files:
           networks:
             - dex-network
           healthcheck:
-            test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5556/healthz"]
+            test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://10.0.0.200:5556/healthz"]
             interval: 30s
             timeout: 10s
             retries: 3
