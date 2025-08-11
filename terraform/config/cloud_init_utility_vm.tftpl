@@ -386,7 +386,7 @@ write_files:
       
       echo "✅ Harbor installation completed!"
       echo "🌐 Harbor is available at: http://$HARBOR_HOST"
-      echo "🌐 External Harbor URL: https://harbor.${RANCHER_DOMAIN}"
+      echo "🌐 External Harbor URL: https://harbor.app.${RANCHER_DOMAIN}"
       echo "🔐 Harbor authentication: GitHub OAuth only (database auth disabled)"
       echo "📦 Proxy cache: Anonymous read access enabled for pull-through functionality"
       echo "⚠️  IMPORTANT: Harbor GUI requires GitHub OAuth authentication"
@@ -464,7 +464,7 @@ write_files:
           
           if [ "$OIDC_HTTP_CODE" = "200" ]; then
             echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
-            echo "🔗 GitHub OIDC Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+            echo "🔗 GitHub OIDC Login URL: https://harbor.app.${RANCHER_DOMAIN}/c/oidc/login"
             echo "👤 Users can now login with their GitHub accounts"
             
             # Verify the configuration was applied
@@ -577,11 +577,11 @@ write_files:
           echo "   ✅ Anonymous read access: ENABLED (for proxy cache pulls)"
           echo "   ✅ Project creation: ADMIN ONLY"
           echo "   ✅ Self registration: DISABLED"
-          echo "   🌐 GUI Access: https://harbor.${RANCHER_DOMAIN} (Internal network + GitHub OAuth)"
-          echo "   📦 Proxy Cache: docker pull harbor.${RANCHER_DOMAIN}/dockerhub/image:tag"
+          echo "   🌐 GUI Access: https://harbor.app.${RANCHER_DOMAIN} (Internal network + GitHub OAuth)"
+          echo "   📦 Proxy Cache: docker pull harbor.app.${RANCHER_DOMAIN}/dockerhub/image:tag"
           echo ""
           echo "🌐 INTERNAL NETWORK ACCESS:"
-          echo "   • Harbor Container Registry:    https://harbor.${RANCHER_DOMAIN}"
+          echo "   • Harbor Container Registry:    https://harbor.app.${RANCHER_DOMAIN}"
           echo "   • Rancher Kubernetes GUI:       https://k8s.${RANCHER_DOMAIN}"  
           echo "   • API Gateway Manager:           https://gateway-manager.${RANCHER_DOMAIN}"
           echo "   🔒 All services secured with GitHub team authentication"
@@ -806,7 +806,7 @@ write_files:
       
       # Uncomment external_url if you want to enable external proxy
       # And when it enabled the hostname will no longer used
-      external_url: https://harbor.${RANCHER_DOMAIN}
+      external_url: https://harbor.app.${RANCHER_DOMAIN}
       
       # The initial password of Harbor admin
       harbor_admin_password: Harbor12345
@@ -1177,11 +1177,11 @@ write_files:
             echo "   🚫 Admin credentials no longer work (HTTP $HTTP_CODE)"
             echo "   👤 GUI requires GitHub OAuth authentication only"
             echo "   📦 Proxy cache retains anonymous read access"
-            echo "   🌐 Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+            echo "   🌐 Login URL: https://harbor.app.${RANCHER_DOMAIN}/c/oidc/login"
           fi
           ;;
         oidc-login-url)
-          echo "GitHub OIDC Login URL: https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+          echo "GitHub OIDC Login URL: https://harbor.app.${RANCHER_DOMAIN}/c/oidc/login"
           ;;
         health)
           HARBOR_URL="http://utility-node.internal.lan"
@@ -1258,7 +1258,7 @@ write_files:
       staticClients:
       - id: harbor
         redirectURIs:
-        - 'https://harbor.${RANCHER_DOMAIN}/c/oidc/callback'
+        - 'https://harbor.app.${RANCHER_DOMAIN}/c/oidc/callback'
         name: 'Harbor Registry'
         secret: 'DEX_CLIENT_SECRET_PLACEHOLDER'
       
@@ -1349,7 +1349,7 @@ write_files:
       echo ""
       
       echo "4. Testing the complete OIDC login URL..."
-      LOGIN_URL="https://harbor.${RANCHER_DOMAIN}/c/oidc/login"
+      LOGIN_URL="https://harbor.app.${RANCHER_DOMAIN}/c/oidc/login"
       LOGIN_RESPONSE=$(curl -s -w "%%{http_code}" -o /dev/null "$LOGIN_URL" 2>/dev/null)
       if [ "$LOGIN_RESPONSE" = "302" ] || [ "$LOGIN_RESPONSE" = "200" ]; then
         echo "✅ Harbor OIDC login endpoint accessible (HTTP $LOGIN_RESPONSE)"
