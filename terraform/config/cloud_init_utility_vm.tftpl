@@ -1220,7 +1220,7 @@ write_files:
   - path: /opt/dex/config.yaml.template
     permissions: '0644'
     content: |
-      issuer: http://10.0.0.200:5556
+      issuer: https://harbor-dex.app.${RANCHER_DOMAIN}
       
       storage:
         type: sqlite3
