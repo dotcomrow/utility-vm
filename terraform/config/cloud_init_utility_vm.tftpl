@@ -434,7 +434,7 @@ write_files:
             -d "{
               \"auth_mode\": \"oidc_auth\",
               \"oidc_name\": \"GitHub via Dex\",
-              \"oidc_endpoint\": \"https://harbor-dex.app.${RANCHER_DOMAIN}\",
+              \"oidc_endpoint\": \"http://localhost:5556\",
               \"oidc_client_id\": \"harbor\",
               \"oidc_client_secret\": \"$DEX_CLIENT_SECRET\",
               \"oidc_scope\": \"openid email profile groups\",
@@ -460,7 +460,7 @@ write_files:
           echo "  Request URL: $HARBOR_URL/api/v2.0/configurations"
           echo "  HTTP Response Code: $OIDC_HTTP_CODE"
           echo "  Dex Client Secret: $DEX_CLIENT_SECRET"
-          echo "  OIDC Endpoint: https://harbor-dex.app.${RANCHER_DOMAIN}"
+          echo "  OIDC Endpoint: http://localhost:5556"
           
           if [ "$OIDC_HTTP_CODE" = "200" ]; then
             echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
@@ -770,7 +770,7 @@ write_files:
       
       if [ "$CONTAINER_RUNNING" -gt 0 ]; then
         echo "✅ Dex OIDC provider is fully operational"
-        echo "🌐 Dex issuer: https://harbor-dex.app.${RANCHER_DOMAIN}"
+        echo "🌐 Dex issuer: http://localhost:5556"
         echo "🔧 Health endpoint: http://localhost:5556/healthz"
         echo "🔧 OIDC discovery: http://localhost:5556/.well-known/openid-configuration"
         echo "🔧 Use 'cd /opt/dex && docker-compose logs -f' to view logs"
@@ -1220,7 +1220,7 @@ write_files:
   - path: /opt/dex/config.yaml.template
     permissions: '0644'
     content: |
-      issuer: https://harbor-dex.app.${RANCHER_DOMAIN}
+      issuer: http://localhost:5556
       
       storage:
         type: sqlite3
@@ -1323,7 +1323,7 @@ write_files:
       
       echo "2. Testing Harbor's ability to reach Dex..."
       # This tests from Harbor's perspective (through the external URL)
-      HARBOR_TO_DEX_TEST=$(docker exec -it $(docker ps -q --filter "name=harbor-core") curl -s -w "%%{http_code}" "https://harbor-dex.app.${RANCHER_DOMAIN}/.well-known/openid-configuration" 2>/dev/null | tail -c 3)
+      HARBOR_TO_DEX_TEST=$(docker exec -it $(docker ps -q --filter "name=harbor-core") curl -s -w "%%{http_code}" "http://localhost:5556/.well-known/openid-configuration" 2>/dev/null | tail -c 3)
       if [ "$HARBOR_TO_DEX_TEST" = "200" ]; then
         echo "✅ Harbor can reach Dex via external URL"
       else
