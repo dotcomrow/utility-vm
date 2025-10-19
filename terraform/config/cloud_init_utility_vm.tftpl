@@ -613,6 +613,7 @@ write_files:
       chmod +x /usr/local/bin/harbor-manage
       
       echo "✅ Harbor setup completed successfully"
+      systemctl disable initial-setup.service
 
   - path: /usr/local/bin/setup-dex.sh
     permissions: '0755'
