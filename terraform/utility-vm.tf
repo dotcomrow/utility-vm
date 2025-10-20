@@ -92,7 +92,7 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
     interface    = "scsi0"           # ✅ Use SCSI for iothread support
     iothread     = true              # ✅ Improve I/O parallelism
     discard      = "on"
-    size         = 10
+    size         = 20
     file_format  = "raw"             # ✅ Best raw performance
     cache     = "unsafe"
   }
@@ -102,7 +102,7 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
     interface    = "scsi1"           # Secondary disk for Harbor storage
     iothread     = true              # ✅ Improve I/O parallelism
     discard      = "on"
-    size         = 100
+    size         = 90
     file_format  = "raw"             # ✅ Best raw performance
     backup       = false             # ✅ Exclude from Proxmox backups (Harbor data can be regenerated)
   }
