@@ -386,7 +386,7 @@ write_files:
       
       echo "✅ Harbor installation completed!"
       echo "🌐 Harbor is available at: http://$HARBOR_HOST"
-      echo "🌐 External Harbor URL: https://harbor.app.${RANCHER_DOMAIN}"
+      echo "🌐 External Harbor URL: https://harbor.teleport.app.${RANCHER_DOMAIN}"
       echo "🔐 Harbor authentication: GitHub OAuth only (database auth disabled)"
       echo "📦 Proxy cache: Anonymous read access enabled for pull-through functionality"
       echo "⚠️  IMPORTANT: Harbor GUI requires GitHub OAuth authentication"
@@ -434,7 +434,7 @@ write_files:
             -d "{
               \"auth_mode\": \"oidc_auth\",
               \"oidc_name\": \"GitHub via Dex\",
-              \"oidc_endpoint\": \"https://harbor-dex.app.${RANCHER_DOMAIN}\",
+              \"oidc_endpoint\": \"https://harbor-dex.teleport.app.${RANCHER_DOMAIN}\",
               \"oidc_client_id\": \"harbor\",
               \"oidc_client_secret\": \"$DEX_CLIENT_SECRET\",
               \"oidc_scope\": \"openid email profile groups\",
@@ -460,11 +460,11 @@ write_files:
           echo "  Request URL: $HARBOR_URL/api/v2.0/configurations"
           echo "  HTTP Response Code: $OIDC_HTTP_CODE"
           echo "  Dex Client Secret: $DEX_CLIENT_SECRET"
-          echo "  OIDC Endpoint: https://harbor-dex.app.${RANCHER_DOMAIN}"
+          echo "  OIDC Endpoint: https://harbor-dex.teleport.app.${RANCHER_DOMAIN}"
           
           if [ "$OIDC_HTTP_CODE" = "200" ]; then
             echo "✅ Harbor configured to use Dex OIDC for GitHub authentication"
-            echo "🔗 GitHub OIDC Login URL: https://harbor.app.${RANCHER_DOMAIN}/c/oidc/login"
+            echo "🔗 GitHub OIDC Login URL: https://harbor.teleport.app.${RANCHER_DOMAIN}/c/oidc/login"
             echo "👤 Users can now login with their GitHub accounts"
             
             # Verify the configuration was applied
@@ -577,11 +577,11 @@ write_files:
           echo "   ✅ Anonymous read access: ENABLED (for proxy cache pulls)"
           echo "   ✅ Project creation: ADMIN ONLY"
           echo "   ✅ Self registration: DISABLED"
-          echo "   🌐 GUI Access: https://harbor.app.${RANCHER_DOMAIN} (Internal network + GitHub OAuth)"
-          echo "   📦 Proxy Cache: docker pull harbor.app.${RANCHER_DOMAIN}/dockerhub/image:tag"
+          echo "   🌐 GUI Access: https://harbor.teleport.app.${RANCHER_DOMAIN} (Internal network + GitHub OAuth)"
+          echo "   📦 Proxy Cache: docker pull harbor.teleport.app.${RANCHER_DOMAIN}/dockerhub/image:tag"
           echo ""
           echo "🌐 INTERNAL NETWORK ACCESS:"
-          echo "   • Harbor Container Registry:    https://harbor.app.${RANCHER_DOMAIN}"
+          echo "   • Harbor Container Registry:    https://harbor.teleport.app.${RANCHER_DOMAIN}"
           echo "   • Rancher Kubernetes GUI:       https://k8s.${RANCHER_DOMAIN}"  
           echo "   • API Gateway Manager:           https://gateway-manager.${RANCHER_DOMAIN}"
           echo "   🔒 All services secured with GitHub team authentication"
@@ -718,7 +718,7 @@ write_files:
       attempt=1
       while true; do
         # Try the OIDC discovery endpoint (this is the key endpoint)
-        if curl -f -s https://harbor-dex.app.${RANCHER_DOMAIN}/.well-known/openid-configuration >/dev/null 2>&1; then
+        if curl -f -s https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/.well-known/openid-configuration >/dev/null 2>&1; then
           echo "✅ Dex OIDC provider is ready (attempt $attempt) - OIDC discovery endpoint responding"
           break
         fi
@@ -730,19 +730,19 @@ write_files:
         fi
         
         # Try the health endpoint
-        if curl -f -s https://harbor-dex.app.${RANCHER_DOMAIN}/healthz >/dev/null 2>&1; then
+        if curl -f -s https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/healthz >/dev/null 2>&1; then
           echo "✅ Dex OIDC provider is ready (attempt $attempt) - /healthz endpoint responding"
           break
         fi
         
         # Try some alternative endpoint patterns
-        if curl -f -s https://harbor-dex.app.${RANCHER_DOMAIN}/auth >/dev/null 2>&1; then
+        if curl -f -s https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/auth >/dev/null 2>&1; then
           echo "✅ Dex OIDC provider is ready (attempt $attempt) - /auth endpoint responding"
           break
         fi
         
         # Fallback to basic connectivity test
-        if curl -f -s https://harbor-dex.app.${RANCHER_DOMAIN}/ >/dev/null 2>&1; then
+        if curl -f -s https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/ >/dev/null 2>&1; then
           echo "✅ Dex OIDC provider is ready (attempt $attempt) - main endpoint responding"
           break
         fi
@@ -754,8 +754,8 @@ write_files:
           echo "🔧 Latest container logs:"
           docker-compose logs --tail=5 || true
           echo "🔧 Testing primary endpoints:"
-          echo "  - /.well-known/openid-configuration: $(curl -s -o /dev/null -w '%%{http_code}' https://harbor-dex.app.${RANCHER_DOMAIN}/.well-known/openid-configuration 2>/dev/null || echo 'failed')"
-          echo "  - /healthz: $(curl -s -o /dev/null -w '%%{http_code}' https://harbor-dex.app.${RANCHER_DOMAIN}/healthz 2>/dev/null || echo 'failed')"
+          echo "  - /.well-known/openid-configuration: $(curl -s -o /dev/null -w '%%{http_code}' https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/.well-known/openid-configuration 2>/dev/null || echo 'failed')"
+          echo "  - /healthz: $(curl -s -o /dev/null -w '%%{http_code}' https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/healthz 2>/dev/null || echo 'failed')"
           echo "🔧 Checking if container is still running..."
           if ! docker-compose ps | grep -q "Up"; then
             echo "❌ Container is no longer running! Breaking out of wait loop."
@@ -771,9 +771,9 @@ write_files:
       
       if [ "$CONTAINER_RUNNING" -gt 0 ]; then
         echo "✅ Dex OIDC provider is fully operational"
-        echo "🌐 Dex issuer: https://harbor-dex.app.${RANCHER_DOMAIN}"
-        echo "🔧 Health endpoint: https://harbor-dex.app.${RANCHER_DOMAIN}/healthz"
-        echo "🔧 OIDC discovery: https://harbor-dex.app.${RANCHER_DOMAIN}/.well-known/openid-configuration"
+        echo "🌐 Dex issuer: https://harbor-dex.teleport.app.${RANCHER_DOMAIN}"
+        echo "🔧 Health endpoint: https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/healthz"
+        echo "🔧 OIDC discovery: https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/.well-known/openid-configuration"
         echo "🔧 Use 'cd /opt/dex && docker-compose logs -f' to view logs"
         echo "🔧 Use 'cd /opt/dex && docker-compose restart' to restart Dex"
         exit 0
@@ -807,7 +807,7 @@ write_files:
       
       # Uncomment external_url if you want to enable external proxy
       # And when it enabled the hostname will no longer used
-      external_url: https://harbor.app.${RANCHER_DOMAIN}
+      external_url: https://harbor.teleport.app.${RANCHER_DOMAIN}
       
       # The initial password of Harbor admin
       harbor_admin_password: Harbor12345
@@ -1098,7 +1098,7 @@ write_files:
       
       echo "🔧 Testing Dex Endpoints:"
       echo "OIDC Discovery:"
-      curl -s https://harbor-dex.app.${RANCHER_DOMAIN}/.well-known/openid_configuration | jq . 2>/dev/null || echo "Failed to get OIDC discovery"
+      curl -s https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/.well-known/openid_configuration | jq . 2>/dev/null || echo "Failed to get OIDC discovery"
       echo ""
       
       echo "🔧 Recent Dex Logs (last 20 lines):"
@@ -1121,7 +1121,7 @@ write_files:
       echo "=== Debugging Commands ==="
       echo "Monitor Dex logs: cd /opt/dex && docker-compose logs -f"
       echo "Monitor Harbor logs: cd /opt/harbor && docker-compose logs -f core"
-      echo "Test OIDC discovery: curl -s https://harbor-dex.app.${RANCHER_DOMAIN}/.well-known/openid_configuration | jq ."
+      echo "Test OIDC discovery: curl -s https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/.well-known/openid_configuration | jq ."
       echo "View this debug info: debug-oidc"
 
   - path: /usr/local/bin/harbor-manage
@@ -1178,11 +1178,11 @@ write_files:
             echo "   🚫 Admin credentials no longer work (HTTP $HTTP_CODE)"
             echo "   👤 GUI requires GitHub OAuth authentication only"
             echo "   📦 Proxy cache retains anonymous read access"
-            echo "   🌐 Login URL: https://harbor.app.${RANCHER_DOMAIN}/c/oidc/login"
+            echo "   🌐 Login URL: https://harbor.teleport.app.${RANCHER_DOMAIN}/c/oidc/login"
           fi
           ;;
         oidc-login-url)
-          echo "GitHub OIDC Login URL: https://harbor.app.${RANCHER_DOMAIN}/c/oidc/login"
+          echo "GitHub OIDC Login URL: https://harbor.teleport.app.${RANCHER_DOMAIN}/c/oidc/login"
           ;;
         health)
           HARBOR_URL="http://utility-node.internal.lan"
@@ -1221,7 +1221,7 @@ write_files:
   - path: /opt/dex/config.yaml.template
     permissions: '0644'
     content: |
-      issuer: https://harbor-dex.app.${RANCHER_DOMAIN}
+      issuer: https://harbor-dex.teleport.app.${RANCHER_DOMAIN}
       
       storage:
         type: sqlite3
@@ -1240,7 +1240,7 @@ write_files:
         config:
           clientID: ${HARBOR_OIDC_CLIENT}
           clientSecret: ${HARBOR_OIDC_SECRET}
-          redirectURI: https://harbor-dex.app.${RANCHER_DOMAIN}/callback
+          redirectURI: https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/callback
           orgs:
           - name: ${GITHUB_ORG}
             teams:
@@ -1259,7 +1259,7 @@ write_files:
       staticClients:
       - id: harbor
         redirectURIs:
-        - 'https://harbor.app.${RANCHER_DOMAIN}/c/oidc/callback'
+        - 'https://harbor.teleport.app.${RANCHER_DOMAIN}/c/oidc/callback'
         name: 'Harbor Registry'
         secret: 'DEX_CLIENT_SECRET_PLACEHOLDER'
       
@@ -1290,7 +1290,7 @@ write_files:
           networks:
             - dex-network
           healthcheck:
-            test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "https://harbor-dex.app.${RANCHER_DOMAIN}/healthz"]
+            test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/healthz"]
             interval: 30s
             timeout: 10s
             retries: 3
@@ -1307,7 +1307,7 @@ write_files:
       echo "=== Testing OIDC Flow ==="
       
       echo "1. Testing Dex OIDC Discovery..."
-      DISCOVERY_URL="https://harbor-dex.app.${RANCHER_DOMAIN}/.well-known/openid_configuration"
+      DISCOVERY_URL="https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/.well-known/openid_configuration"
       DISCOVERY_RESULT=$(curl -s "$DISCOVERY_URL")
       if [ $? -eq 0 ] && echo "$DISCOVERY_RESULT" | jq . >/dev/null 2>&1; then
         echo "✅ Dex OIDC Discovery successful"
@@ -1324,7 +1324,7 @@ write_files:
       
       echo "2. Testing Harbor's ability to reach Dex..."
       # This tests from Harbor's perspective (through the external URL)
-      HARBOR_TO_DEX_TEST=$(docker exec -it $(docker ps -q --filter "name=harbor-core") curl -s -w "%%{http_code}" "https://harbor-dex.app.${RANCHER_DOMAIN}/.well-known/openid-configuration" 2>/dev/null | tail -c 3)
+      HARBOR_TO_DEX_TEST=$(docker exec -it $(docker ps -q --filter "name=harbor-core") curl -s -w "%%{http_code}" "https://harbor-dex.teleport.app.${RANCHER_DOMAIN}/.well-known/openid-configuration" 2>/dev/null | tail -c 3)
       if [ "$HARBOR_TO_DEX_TEST" = "200" ]; then
         echo "✅ Harbor can reach Dex via external URL"
       else
@@ -1350,7 +1350,7 @@ write_files:
       echo ""
       
       echo "4. Testing the complete OIDC login URL..."
-      LOGIN_URL="https://harbor.app.${RANCHER_DOMAIN}/c/oidc/login"
+      LOGIN_URL="https://harbor.teleport.app.${RANCHER_DOMAIN}/c/oidc/login"
       LOGIN_RESPONSE=$(curl -s -w "%%{http_code}" -o /dev/null "$LOGIN_URL" 2>/dev/null)
       if [ "$LOGIN_RESPONSE" = "302" ] || [ "$LOGIN_RESPONSE" = "200" ]; then
         echo "✅ Harbor OIDC login endpoint accessible (HTTP $LOGIN_RESPONSE)"
