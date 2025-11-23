@@ -154,3 +154,9 @@ variable "HARBOR_OIDC_SECRET" {
   sensitive   = true
   default     = "supersecret"
 }
+
+variable "vm_id" {
+  description = "The VM ID for the Proxmox VM"
+  type        = number
+  default     = 105
+}

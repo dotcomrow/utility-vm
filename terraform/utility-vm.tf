@@ -45,6 +45,7 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
   node_name = var.node_name
   stop_on_destroy = false
   on_boot = true
+  vm_id = var.vm_id
 
   # Protect against accidental destruction
   lifecycle {
