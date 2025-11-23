@@ -180,7 +180,7 @@ jobs:
             fi
             
             echo "🧼 Cleaning up cloud-init snippets..."
-            rm -f /var/lib/vz/snippets/cloud_init_*.yaml || true
+            rm -f /var/lib/vz/snippets/cloud_init_utility_vm.yaml || true
           '
 
       - name: Trigger Terraform Destroy
