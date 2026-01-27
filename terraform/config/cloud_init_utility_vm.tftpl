@@ -291,6 +291,95 @@ write_files:
       echo "✅ Harbor API available, waiting for full initialization..."
       sleep 30
       
+      # Ensure proxy cache projects keep all artifacts (override default 7-day retention)
+      configure_retention_keep_forever() {
+        local project_name=$1
+        local project_json project_id retention_id
+        local policy_json response http_code response_body
+        
+        echo "Configuring retention policy (keep forever) for project: $project_name"
+        
+        project_json=$(curl -s "$HARBOR_URL/api/v2.0/projects?name=$project_name" \
+          -u "${HARBOR_USER}:${HARBOR_PASS}" || true)
+        project_id=$(echo "$project_json" | jq -r '.[0].project_id // empty' 2>/dev/null || true)
+        retention_id=$(echo "$project_json" | jq -r '.[0].metadata.retention_id // empty' 2>/dev/null || true)
+        
+        if [ -z "$project_id" ] || [ "$project_id" = "null" ]; then
+          echo "⚠️  Could not find project ID for $project_name (skipping retention update)"
+          return 0
+        fi
+        
+        policy_json=$(cat <<EOF
+{
+  "algorithm": "or",
+  "rules": [
+    {
+      "action": "retain",
+      "template": "always",
+      "params": {},
+      "tag_selectors": [
+        {
+          "kind": "doublestar",
+          "decoration": "matches",
+          "pattern": "**",
+          "extras": "{\"untagged\":true}"
+        }
+      ],
+      "scope_selectors": {
+        "repository": [
+          {
+            "kind": "doublestar",
+            "decoration": "repoMatches",
+            "pattern": "**",
+            "extras": ""
+          }
+        ]
+      }
+    }
+  ],
+  "trigger": {
+    "kind": "Schedule",
+    "settings": {
+      "cron": "0 0 0 * * *"
+    }
+  },
+  "scope": {
+    "level": "project",
+    "ref": $project_id
+  }
+}
+EOF
+)
+        
+        if [ -n "$retention_id" ] && [ "$retention_id" != "null" ]; then
+          response=$(curl -s -w "\n%{http_code}" -X PUT \
+            "$HARBOR_URL/api/v2.0/retentions/$retention_id" \
+            -H "Content-Type: application/json" \
+            -u "${HARBOR_USER}:${HARBOR_PASS}" \
+            -d "$policy_json" || true)
+          http_code=$(echo "$response" | tail -n1)
+          response_body=$(echo "$response" | head -n -1)
+          if [ "$http_code" = "200" ]; then
+            echo "✅ Retention policy updated for $project_name (id: $retention_id)"
+          else
+            echo "⚠️  Failed to update retention policy for $project_name (HTTP $http_code): $response_body"
+          fi
+        else
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            "$HARBOR_URL/api/v2.0/retentions" \
+            -H "Content-Type: application/json" \
+            -u "${HARBOR_USER}:${HARBOR_PASS}" \
+            -d "$policy_json" || true)
+          http_code=$(echo "$response" | tail -n1)
+          response_body=$(echo "$response" | head -n -1)
+          if [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; then
+            echo "✅ Retention policy created for $project_name"
+          else
+            echo "⚠️  Failed to create retention policy for $project_name (HTTP $http_code): $response_body"
+          fi
+        fi
+      }
+      
       # Function to create proxy cache project
       create_proxy_project() {
         local project_name=$1
@@ -370,6 +459,7 @@ write_files:
         fi
         
         echo "✅ Successfully created proxy cache project: $project_name"
+        configure_retention_keep_forever "$project_name" || true
         sleep 2  # Brief pause between projects
       }
       
