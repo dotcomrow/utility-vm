@@ -74,13 +74,13 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
   numa {
     device     = "numa0"
     cpus       = "0-1"
-    memory     = 8192  # 8 GiB
+    memory     = 6144  # 8 GiB
     hostnodes  = "3"
     policy     = "bind"
   }
 
   memory {
-    dedicated = 8192       # fixed RAM allocation in MiB
+    dedicated = 6144       # fixed RAM allocation in MiB
     hugepages = var.enable_hugepages ? var.hugepages_value : null
   }
 
