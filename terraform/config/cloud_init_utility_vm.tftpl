@@ -352,7 +352,7 @@ write_files:
         )
         
         if [ -n "$retention_id" ] && [ "$retention_id" != "null" ]; then
-          response=$(curl -s -w "\n%{http_code}" -X PUT \
+          response=$(curl -s -w "\n%%{http_code}" -X PUT \
             "$HARBOR_URL/api/v2.0/retentions/$retention_id" \
             -H "Content-Type: application/json" \
             -u "${HARBOR_USER}:${HARBOR_PASS}" \
@@ -365,7 +365,7 @@ write_files:
             echo "⚠️  Failed to update retention policy for $project_name (HTTP $http_code): $response_body"
           fi
         else
-          response=$(curl -s -w "\n%{http_code}" -X POST \
+          response=$(curl -s -w "\n%%{http_code}" -X POST \
             "$HARBOR_URL/api/v2.0/retentions" \
             -H "Content-Type: application/json" \
             -u "${HARBOR_USER}:${HARBOR_PASS}" \
