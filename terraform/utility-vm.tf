@@ -74,7 +74,7 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
   numa {
     device     = "numa0"
     cpus       = "0-1"
-    memory     = 4096  # 8 GiB
+    memory     = 4096  # 4 GiB
     hostnodes  = "3"
     policy     = "bind"
   }
