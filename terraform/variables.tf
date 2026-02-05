@@ -119,7 +119,7 @@ variable "hugepages_value" {
 variable "HARBOR_VERSION" {
   description = "Version of Harbor to deploy"
   type        = string
-  default     = "v2.11.1"
+  default     = "v2.14.2"
 }
 
 variable "HARBOR_USER" {
