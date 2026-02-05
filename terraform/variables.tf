@@ -36,7 +36,6 @@ variable "utility_hostname" {
   default = "utility-node"
 }
 
-
 variable "RANCHER_HOSTNAME" {
   default = "k8s"
 }
@@ -44,7 +43,6 @@ variable "RANCHER_HOSTNAME" {
 variable "RANCHER_DOMAIN" {
   default = "suncoast.systems"
 }
-
 
 variable "MONITORED_RESOURCE_TYPE" {
   default = "generic_node"
@@ -64,7 +62,6 @@ variable "GITHUB_ORG" {
   default     = "suncoast-systems-k8s"
 }
 
-
 variable "VM_DISK_STORAGE" {
   default = "Cluster"
 }
@@ -72,7 +69,6 @@ variable "VM_DISK_STORAGE" {
 variable "UBUNTU_RELEASE_CODE_NAME" {
   default = "noble"
 }
-
 
 variable "project_name" {
   description = "The GCP project ID"
@@ -107,8 +103,6 @@ variable "retention_days" {
   type        = number
   default     = 30
 }
-
-
 
 variable "enable_hugepages" {
   description = "Enable hugepages for VMs"
