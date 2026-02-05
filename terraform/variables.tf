@@ -18,10 +18,8 @@ variable "admin_ssh_public_key" {
   type        = string
 }
 
-
-
 variable "vm_img" {
-  default = "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+  default = "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
   type    = string
 }
 
