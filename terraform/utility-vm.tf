@@ -68,7 +68,7 @@ resource "proxmox_virtual_environment_vm" "utility_vm" {
     sockets = var.utility_cpu_sockets
     type    = "host"       # ✅ Use host CPU for full feature set
     numa    = true         # ✅ Enable NUMA for multi-socket configs
-    affinity = "43,47"  # Pin utility vCPUs to host-sibling CPUs on node3
+    affinity = "39,79"  # Pin utility vCPUs to an HT pair on node3
   }
 
   numa {
