@@ -63,7 +63,7 @@ variable "GITHUB_ORG" {
 }
 
 variable "VM_DISK_STORAGE" {
-  default = "Cluster"
+  default = "ClusterStorage"
 }
 
 variable "UBUNTU_RELEASE_CODE_NAME" {
